@@ -1,0 +1,6 @@
+{
+  "name": "bhyon-hd-ai",
+  "version": "1.0.0",
+  "private": true,
+  "description": "BHYON HD dengan backend proxy Real-ESRGAN (Replicate API)"
+}
