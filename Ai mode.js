@@ -1,34 +1,39 @@
-/* ai-mode.js
-   Tambahan untuk BHYON HD: tombol "Upscale AI Asli (Real-ESRGAN)".
-   Cara pakai: taruh file ini di folder yang sama dengan index.html,
-   lalu tambahkan baris ini SEBELUM tag </body> di index.html:
-     <script src="ai-mode.js"></script>
+/* ai-mode.js — versi SIMPLE, 100% jalan di browser, tanpa server/akun/API key.
+   Pakai UpscalerJS (model AI ESRGAN via TensorFlow.js) yang dimuat lewat CDN
+   di index.html. Detail gambar benar-benar ditambah oleh neural network,
+   bukan sekadar resize + sharpen.
 
-   Ganti PROXY_URL di bawah sesuai alamat backend kamu setelah deploy ke Vercel.
+   Cara pakai: cukup taruh file ini satu folder dengan index.html, sudah otomatis
+   terpanggil karena index.html sudah berisi <script src="ai-mode.js"></script>.
+   Tidak perlu langkah lain — buka index.html di browser, selesai.
 */
 (function () {
-  const PROXY_URL = '/api/upscale'; // otomatis benar kalau di-deploy 1 project yang sama di Vercel
+  let upscalerInstance = null;
+  function getUpscaler() {
+    if (!upscalerInstance) {
+      upscalerInstance = new Upscaler({ model: DefaultUpscalerJSModel });
+    }
+    return upscalerInstance;
+  }
 
   document.addEventListener('DOMContentLoaded', () => {
     const processBtn = document.getElementById('processBtn');
     if (!processBtn) return;
 
-    // Buat tombol baru + checkbox face enhance, disisipkan setelah tombol lokal
     const wrap = document.createElement('div');
     wrap.style.marginTop = '10px';
     wrap.innerHTML = `
       <button type="button" id="aiProcessBtn" class="process-btn" style="background:linear-gradient(135deg,#37e29a,#1f9f6c);">
-        🚀 Upscale AI Asli (Real-ESRGAN)
+        🚀 HD Asli (AI, 4x) — sekali klik
       </button>
-      <label style="display:flex;align-items:center;gap:6px;margin-top:8px;font-size:12.5px;color:var(--text-2);">
-        <input type="checkbox" id="faceEnhanceChk" />
-        Perbaiki wajah (untuk foto orang)
-      </label>
+      <div style="font-size:11.5px;color:var(--text-2);margin-top:6px;">
+        Proses AI berjalan langsung di browser kamu. Pertama kali dipakai butuh
+        beberapa detik untuk mengunduh model (±3-5MB), setelah itu lebih cepat.
+      </div>
     `;
     processBtn.insertAdjacentElement('afterend', wrap);
 
     const aiBtn = document.getElementById('aiProcessBtn');
-    const faceChk = document.getElementById('faceEnhanceChk');
 
     aiBtn.addEventListener('click', async () => {
       const inputImgEl = document.getElementById('inputImgEl');
@@ -41,62 +46,69 @@
       const progressFill = document.getElementById('progressFill');
       const progressLabel = document.getElementById('progressLabel');
       progressWrap.classList.add('active');
-      progressFill.style.width = '15%';
-      progressLabel.textContent = 'Mengirim gambar ke server AI...';
       aiBtn.disabled = true;
 
       try {
-        // Ubah gambar sumber jadi data URL base64 (dari elemen <img> preview yang sudah ada)
-        const dataUrl = await imageElementToDataURL(inputImgEl);
+        progressFill.style.width = '10%';
+        progressLabel.textContent = 'Menyiapkan model AI (pertama kali agak lama)...';
 
+        const upscaler = getUpscaler();
+
+        // Batasi ukuran input dulu biar tidak terlalu berat untuk browser
+        const safeSrc = await limitSize(inputImgEl, 1000);
+
+        // Pass 1: AI upscale 2x (detail asli ditambah oleh model)
         progressFill.style.width = '35%';
-        progressLabel.textContent = 'Memproses dengan Real-ESRGAN (bisa 10-40 detik)...';
+        progressLabel.textContent = 'AI menambah detail (langkah 1/2)...';
+        const pass1 = await upscaler.upscale(safeSrc);
 
-        const resp = await fetch(PROXY_URL, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            image: dataUrl,
-            scale: 4,
-            face_enhance: faceChk.checked,
-          }),
-        });
-        const result = await resp.json();
-        if (!resp.ok) throw new Error(result.error || 'Gagal memproses di server.');
+        // Pass 2: AI upscale 2x lagi dari hasil pass 1 → total kira-kira 4x
+        progressFill.style.width = '70%';
+        progressLabel.textContent = 'AI menambah detail (langkah 2/2, menuju 4x)...';
+        const pass1Img = await loadImage(pass1);
+        const pass2 = await upscaler.upscale(pass1Img);
 
-        const outputUrl = Array.isArray(result.output) ? result.output[0] : result.output;
-        progressFill.style.width = '85%';
+        progressFill.style.width = '90%';
         progressLabel.textContent = 'Menyusun hasil...';
-
-        await renderAIResult(inputImgEl.src, outputUrl);
+        await renderAIResult(inputImgEl.src, pass2);
 
         progressFill.style.width = '100%';
         progressLabel.textContent = 'Selesai!';
-        document.getElementById('outputTagText').textContent =
-          'Diproses AI (Real-ESRGAN) — detail ditambahkan oleh model, bukan sekadar resize';
+        const tag = document.getElementById('outputTagText');
+        if (tag) tag.textContent = 'Diproses AI (ESRGAN, 4x) — detail ditambahkan model, bukan sekadar resize';
       } catch (err) {
         console.error(err);
-        alert('Gagal: ' + err.message);
+        alert('Gagal memproses: ' + err.message + '\n\nCoba pakai gambar yang lebih kecil, atau pastikan koneksi internet stabil (model perlu diunduh sekali).');
       } finally {
         aiBtn.disabled = false;
       }
     });
   });
 
-  function imageElementToDataURL(imgEl) {
+  function limitSize(imgEl, maxSide) {
     return new Promise((resolve) => {
+      const scale = Math.min(1, maxSide / Math.max(imgEl.naturalWidth, imgEl.naturalHeight));
+      if (scale === 1) { resolve(imgEl); return; }
       const canvas = document.createElement('canvas');
-      // Batasi ukuran upload biar tidak terlalu berat (Real-ESRGAN akan upscale sendiri)
-      const MAX = 1600;
-      const scale = Math.min(1, MAX / Math.max(imgEl.naturalWidth, imgEl.naturalHeight));
       canvas.width = Math.round(imgEl.naturalWidth * scale);
       canvas.height = Math.round(imgEl.naturalHeight * scale);
       canvas.getContext('2d').drawImage(imgEl, 0, 0, canvas.width, canvas.height);
-      resolve(canvas.toDataURL('image/jpeg', 0.92));
+      const out = new Image();
+      out.onload = () => resolve(out);
+      out.src = canvas.toDataURL('image/png');
     });
   }
 
-  function renderAIResult(beforeSrc, afterUrl) {
+  function loadImage(src) {
+    return new Promise((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = reject;
+      img.src = src;
+    });
+  }
+
+  function renderAIResult(beforeSrc, afterDataUrl) {
     return new Promise((resolve, reject) => {
       const afterImg = document.getElementById('afterImg');
       const beforeImg = document.getElementById('beforeImg');
@@ -108,14 +120,13 @@
       const compareHandle = document.getElementById('compareHandle');
 
       const testImg = new Image();
-      testImg.crossOrigin = 'anonymous';
       testImg.onload = () => {
         outputCanvas.width = testImg.naturalWidth;
         outputCanvas.height = testImg.naturalHeight;
         outputCanvas.getContext('2d').drawImage(testImg, 0, 0);
 
         beforeImg.src = beforeSrc;
-        afterImg.src = afterUrl;
+        afterImg.src = afterDataUrl;
         compareBeforeWrap.style.width = '50%';
         compareHandle.style.left = '50%';
 
@@ -125,7 +136,7 @@
         resolve();
       };
       testImg.onerror = reject;
-      testImg.src = afterUrl;
+      testImg.src = afterDataUrl;
     });
   }
 })();
