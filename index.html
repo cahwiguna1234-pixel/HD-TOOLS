@@ -1,9 +1,11 @@
 <!DOCTYPE html>
 <html lang="id">
 <head>
+  <link rel="icon" type="image/svg+xml" href="logo.svg" />
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>BHYON HD</title>
+  <link rel="icon" type="image/svg+xml" href="logo.svg">
 <style>
   @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&display=swap');
 
@@ -366,9 +368,33 @@
 <div class="shell">
   <header>
     <div class="brand">
-      <svg class="mark" viewBox="0 0 40 40" fill="none">
+      <svg class="mark" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
         <rect x="1" y="1" width="38" height="38" rx="11" fill="#0e1a15" stroke="#1c2c24"/>
-        <path d="M13 27V13h7.2c2.9 0 4.9 1.6 4.9 4.1 0 1.7-.9 2.9-2.3 3.4 1.7.5 2.8 1.9 2.8 3.8 0 2.7-2.1 4.5-5.2 4.5H13Zm3.3-8.3h3.4c1.3 0 2.1-.7 2.1-1.8s-.8-1.8-2.1-1.8h-3.4v3.6Zm0 6.3h3.7c1.5 0 2.4-.8 2.4-2s-.9-2-2.4-2h-3.7v4Z" fill="#37e29a"/>
+
+        <clipPath id="markLeft"><rect x="3" y="3" width="17" height="34" rx="2"/></clipPath>
+        <clipPath id="markRight"><rect x="20" y="3" width="17" height="34" rx="2"/></clipPath>
+
+        <!-- Kiri: versi blur / resolusi rendah -->
+        <g clip-path="url(#markLeft)">
+          <circle cx="9.4" cy="13" r="3.1" fill="#4d6459" opacity=".35"/>
+          <circle cx="10.4" cy="13.3" r="3.1" fill="#4d6459" opacity=".45"/>
+          <path d="M3 32 L9.4 22.6 L13 26.4 L17.4 18.6 L21 32 Z" fill="#3b5148" opacity=".4"/>
+          <path d="M3.7 32.4 L10.1 23 L13.7 26.8 L18.1 19 L21.7 32.4 Z" fill="#3b5148" opacity=".55"/>
+        </g>
+
+        <!-- Kanan: versi tajam / HD -->
+        <g clip-path="url(#markRight)">
+          <circle cx="29.5" cy="11.5" r="2.7" fill="#37e29a"/>
+          <path d="M20 32 L26.4 22.6 L30 26.4 L34.4 18.6 L38 32 Z" fill="#37e29a"/>
+        </g>
+
+        <!-- Garis pembagi + handle, meniru slider before/after di dalam tools -->
+        <line x1="20" y1="5" x2="20" y2="35" stroke="#37e29a" stroke-width="1.2"/>
+        <circle cx="20" cy="20" r="3.6" fill="#0b1712" stroke="#37e29a" stroke-width="1.2"/>
+        <path d="M18.3 20 L17 20 M21.7 20 L23 20" stroke="#37e29a" stroke-width="1.2" stroke-linecap="round"/>
+
+        <!-- Kilau kecil penanda AI -->
+        <path d="M34 5.5 L34.7 7.1 L36.3 7.8 L34.7 8.5 L34 10.1 L33.3 8.5 L31.7 7.8 L33.3 7.1 Z" fill="#37e29a"/>
       </svg>
       <div class="brand-text">
         <h1>BHYON HD</h1>
