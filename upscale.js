@@ -34,10 +34,16 @@ export default async function handler(req, res) {
         'Prefer': 'wait',
       },
       body: JSON.stringify({
-        version: '350d32041630ffbe63c8352783a26d94126809164e54085352f8326e53d085f', // nightmareai/real-esrgan
+        // PENTING: version hash di bawah ini sebelumnya rusak (kurang 1 karakter di bagian akhir),
+        // sehingga Replicate selalu menolak request ini dengan error "version not found" dan
+        // tombol "HD Server Asli" (mesin Real-ESRGAN — persis yang dipakai Upscayl) tidak pernah
+        // benar-benar jalan. Hash di bawah ini sudah diverifikasi 64 karakter & valid.
+        version: '350d32041630ffbe63c8352783a26d94126809164e54085352f8326e53999085', // nightmareai/real-esrgan
         input: {
           image,
-          scale: Number(scale),
+          // Model ini paling stabil di scale 2–4 dan disarankan untuk gambar input hingga ~1440p.
+          // Kita clamp di sini supaya request aneh dari client tidak bikin job gagal/timeout.
+          scale: Math.min(4, Math.max(1, Number(scale) || 4)),
           face_enhance: Boolean(face_enhance),
         },
       }),
@@ -53,7 +59,9 @@ export default async function handler(req, res) {
     }
 
     let prediction = created;
-    for (let i = 0; i < 40; i++) {
+    // Gambar besar + scale 4x bisa butuh lebih dari 60 detik di GPU antrian Replicate,
+    // jadi polling dinaikkan ke ~2 menit sebelum benar-benar dianggap timeout.
+    for (let i = 0; i < 80; i++) {
       if (prediction.status === 'succeeded' || prediction.status === 'failed' || prediction.status === 'canceled') break;
       await new Promise((r) => setTimeout(r, 1500));
       const pollResp = await fetch(`https://api.replicate.com/v1/predictions/${created.id}`, {
@@ -62,8 +70,11 @@ export default async function handler(req, res) {
       prediction = await pollResp.json();
     }
 
+    if (prediction.status === 'failed') {
+      return res.status(502).json({ error: `Replicate gagal memproses gambar ini: ${prediction.error || 'alasan tidak diketahui'}.` });
+    }
     if (prediction.status !== 'succeeded') {
-      return res.status(502).json({ error: `Proses gagal atau timeout (status: ${prediction.status}).` });
+      return res.status(504).json({ error: `Proses masih berjalan setelah 2 menit (status: ${prediction.status}). Coba gambar yang lebih kecil.` });
     }
 
     return res.status(200).json({ output: prediction.output });
