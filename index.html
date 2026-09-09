@@ -499,7 +499,7 @@
           <button class="scale-btn active" data-target="3840">4K<br><span style="font-size:10px;font-weight:500;opacity:.75;">3840px</span></button>
           <button class="scale-btn" data-target="6000">6K<br><span style="font-size:10px;font-weight:500;opacity:.75;">6000px</span></button>
         </div>
-        <p class="dz-sub" style="margin-top:8px;max-width:none;">Noise reduction &amp; sharpening otomatis aktif di setiap proses.</p>
+        <p class="dz-sub" style="margin-top:8px;max-width:none;">Noise reduction &amp; sharpening otomatis aktif di setiap proses. Di HP, resolusi 6K bisa otomatis diturunkan sedikit kalau memori perangkat terbatas — supaya tidak error, bukan dikurangi kualitasnya secara sengaja.</p>
 
         <button class="process-btn" id="processBtn" disabled>
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 2v4M12 18v4M4.9 4.9l2.8 2.8M16.3 16.3l2.8 2.8M2 12h4M18 12h4M4.9 19.1l2.8-2.8M16.3 7.7l2.8-2.8"/></svg>
@@ -866,6 +866,45 @@
     }
     return out2;
   }
+  // Versi 1-channel dari box blur di atas, khusus untuk blur luma saat sharpening.
+  // Memakai buffer RGBA 4-channel untuk data 1-channel itu boros memori 4x lipat —
+  // di gambar besar (6K), pemborosan ini yang sering bikin tab browser HP kehabisan
+  // memori dan error/nge-crash. Versi 1-channel ini memakai memori jauh lebih sedikit.
+  function boxBlur1Channel(src, w, h, radius){
+    const out = new Float32Array(src.length);
+    const norm = 1/(radius*2+1);
+    for(let y=0; y<h; y++){
+      const row = y*w;
+      let sum = 0;
+      for(let k=-radius;k<=radius;k++){
+        const xx = Math.min(w-1, Math.max(0, k));
+        sum += src[row + xx];
+      }
+      out[row] = sum*norm;
+      for(let x=1; x<w; x++){
+        const addX = Math.min(w-1, x+radius);
+        const remX = Math.max(0, x-radius-1);
+        sum += src[row + addX] - src[row + remX];
+        out[row + x] = sum*norm;
+      }
+    }
+    const out2 = new Float32Array(src.length);
+    for(let x=0; x<w; x++){
+      let sum = 0;
+      for(let k=-radius;k<=radius;k++){
+        const yy = Math.min(h-1, Math.max(0, k));
+        sum += out[yy*w + x];
+      }
+      out2[x] = sum*norm;
+      for(let y=1; y<h; y++){
+        const addY = Math.min(h-1, y+radius);
+        const remY = Math.max(0, y-radius-1);
+        sum += out[addY*w + x] - out[remY*w + x];
+        out2[y*w + x] = sum*norm;
+      }
+    }
+    return out2;
+  }
   function finalizeDetail(data, w, h, amount){
     // Sharpening dilakukan HANYA pada channel luma (kecerahan), bukan per-channel R/G/B
     // secara terpisah. Menajamkan R, G, B sendiri-sendiri gampang menyebabkan "color
@@ -876,33 +915,36 @@
     const luma = new Float32Array(n);
     const cb = new Float32Array(n);
     const cr = new Float32Array(n);
+    const alpha = new Uint8ClampedArray(n);
     for(let i=0, p=0; i<data.length; i+=4, p++){
       const r=data[i], g=data[i+1], b=data[i+2];
       luma[p] = 0.299*r + 0.587*g + 0.114*b;
       cb[p]   = -0.168736*r - 0.331264*g + 0.5*b + 128;
       cr[p]   = 0.5*r - 0.418688*g - 0.081312*b + 128;
+      alpha[p] = data[i+3];
     }
-    // blur luma saja (pack ke buffer RGBA dummy supaya bisa pakai boxBlurPass yang ada)
-    const lumaRGBA = new Float32Array(n*4);
-    for(let p=0;p<n;p++){ lumaRGBA[p*4]=luma[p]; }
-    const blurredRGBA = boxBlurPass(lumaRGBA, w, h, 2);
+    data = null; // 'resized' (Float32 RGBA) sudah tidak dibutuhkan lagi — dilepas sedini
+                 // mungkin karena inilah buffer TERBESAR (16 byte/piksel) di seluruh proses.
 
-    const out = new Uint8ClampedArray(data.length);
+    const blurredLuma = boxBlur1Channel(luma, w, h, 2);
+
+    const out = new Uint8ClampedArray(n*4);
     // Halo clamp: batasi hasil tajam supaya tidak overshoot jauh dari nilai piksel
     // tetangga asli — inilah yang mencegah tekstur "pecah"/ringing saat di-zoom besar.
     const haloLimit = 40;
-    for(let i=0, p=0; i<data.length; i+=4, p++){
-      const l0 = luma[p], lb = blurredRGBA[p*4];
+    for(let p=0; p<n; p++){
+      const l0 = luma[p], lb = blurredLuma[p];
       let boosted = l0 + amount*(l0 - lb);
       boosted = Math.max(l0-haloLimit, Math.min(l0+haloLimit, boosted));
       const newLuma = Math.max(0, Math.min(255, boosted));
 
       const Cb = cb[p], Cr = cr[p];
-      let r = newLuma + 1.402*(Cr-128);
-      let g = newLuma - 0.344136*(Cb-128) - 0.714136*(Cr-128);
-      let b = newLuma + 1.772*(Cb-128);
+      const r = newLuma + 1.402*(Cr-128);
+      const g = newLuma - 0.344136*(Cb-128) - 0.714136*(Cr-128);
+      const b = newLuma + 1.772*(Cb-128);
 
-      out[i]=r; out[i+1]=g; out[i+2]=b; out[i+3]=data[i+3];
+      const i = p*4;
+      out[i]=r; out[i+1]=g; out[i+2]=b; out[i+3]=alpha[p];
     }
     return out;
   }
@@ -937,9 +979,21 @@
       targetW = Math.round(targetW); targetH = Math.round(targetH);
 
       // ---- Pengaman memori: batasi total piksel keluaran sesuai kira-kira kapasitas perangkat ----
-      // navigator.deviceMemory (GB) cuma tersedia di sebagian browser (mis. Chrome); kalau tidak ada, anggap konservatif 4GB.
-      const deviceGB = (navigator.deviceMemory || 4);
-      const safeMaxMP = deviceGB * 7; // megapiksel aman per GB RAM, angka konservatif dari uji coba
+      // Ini bagian yang tadinya bikin resolusi 6K sering error di HP. Masalahnya rumus lama cuma
+      // mengandalkan navigator.deviceMemory (RAM fisik device) — padahal itu TIDAK PERNAH tersedia
+      // di Safari iOS (selalu jatuh ke asumsi 4GB) dan bahkan di Android, RAM fisik tidak
+      // mencerminkan seberapa ketat browser membatasi memori SATU TAB sebelum mematikannya paksa.
+      // Sekarang pakai estimasi byte-per-piksel yang riil dari pipeline (resize Lanczos +
+      // sharpening) dan anggaran yang jauh lebih konservatif khusus untuk HP.
+      const isMobile = /Android|iPhone|iPad|iPod|Mobi/i.test(navigator.userAgent) ||
+                        (navigator.maxTouchPoints > 1 && /Mac/i.test(navigator.platform)); // iPad kadang menyamar jadi "Mac"
+      const reportedGB = navigator.deviceMemory || (isMobile ? 3 : 8);
+      // Byte per piksel keluaran di titik puncak (buffer Float32 sementara saat resize+sharpen).
+      const BYTES_PER_OUTPUT_PIXEL = 34;
+      const usableMB = isMobile
+        ? Math.min(460, reportedGB * 150) // HP: dikunci keras — tab browser mobile sangat gampang di-OOM-kill
+        : reportedGB * 250;               // Desktop: jauh lebih longgar, RAM & browser lebih toleran
+      const safeMaxMP = (usableMB * 1024 * 1024) / (BYTES_PER_OUTPUT_PIXEL * 1e6);
       const requestedMP = (targetW*targetH)/1e6;
       let autoDowngraded = false;
       if(requestedMP > safeMaxMP){
