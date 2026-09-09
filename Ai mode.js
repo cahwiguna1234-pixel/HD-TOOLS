@@ -9,11 +9,26 @@
 */
 (function () {
   let upscalerInstance = null;
+  let currentBackend = null;
+
   function getUpscaler() {
     if (!upscalerInstance) {
       upscalerInstance = new Upscaler({ model: DefaultUpscalerJSModel });
     }
     return upscalerInstance;
+  }
+
+  async function ensureBackend(name) {
+    if (currentBackend === name) return;
+    await tf.setBackend(name);
+    await tf.ready();
+    currentBackend = name;
+    upscalerInstance = null; // model perlu dibuat ulang kalau backend berganti
+  }
+
+  function isShaderOrGpuError(err) {
+    const msg = (err && err.message ? err.message : String(err)).toLowerCase();
+    return msg.includes('shader') || msg.includes('webgl') || msg.includes('gpu') || msg.includes('context');
   }
 
   document.addEventListener('DOMContentLoaded', () => {
@@ -35,6 +50,28 @@
 
     const aiBtn = document.getElementById('aiProcessBtn');
 
+    async function runPipeline(progressFill, progressLabel, inputImgEl) {
+      const upscaler = getUpscaler();
+
+      // Batasi ukuran input dulu biar tidak terlalu berat untuk browser
+      const safeSrc = await limitSize(inputImgEl, 1000);
+
+      // Pass 1: AI upscale 2x (detail asli ditambah oleh model)
+      progressFill.style.width = '35%';
+      progressLabel.textContent = 'AI menambah detail (langkah 1/2)...';
+      const pass1 = await upscaler.upscale(safeSrc);
+
+      // Pass 2: AI upscale 2x lagi dari hasil pass 1 → total kira-kira 4x
+      progressFill.style.width = '70%';
+      progressLabel.textContent = 'AI menambah detail (langkah 2/2, menuju 4x)...';
+      const pass1Img = await loadImage(pass1);
+      const pass2 = await upscaler.upscale(pass1Img);
+
+      progressFill.style.width = '90%';
+      progressLabel.textContent = 'Menyusun hasil...';
+      await renderAIResult(inputImgEl.src, pass2);
+    }
+
     aiBtn.addEventListener('click', async () => {
       const inputImgEl = document.getElementById('inputImgEl');
       if (!inputImgEl || !inputImgEl.src) {
@@ -51,26 +88,21 @@
       try {
         progressFill.style.width = '10%';
         progressLabel.textContent = 'Menyiapkan model AI (pertama kali agak lama)...';
+        await ensureBackend('webgl');
 
-        const upscaler = getUpscaler();
-
-        // Batasi ukuran input dulu biar tidak terlalu berat untuk browser
-        const safeSrc = await limitSize(inputImgEl, 1000);
-
-        // Pass 1: AI upscale 2x (detail asli ditambah oleh model)
-        progressFill.style.width = '35%';
-        progressLabel.textContent = 'AI menambah detail (langkah 1/2)...';
-        const pass1 = await upscaler.upscale(safeSrc);
-
-        // Pass 2: AI upscale 2x lagi dari hasil pass 1 → total kira-kira 4x
-        progressFill.style.width = '70%';
-        progressLabel.textContent = 'AI menambah detail (langkah 2/2, menuju 4x)...';
-        const pass1Img = await loadImage(pass1);
-        const pass2 = await upscaler.upscale(pass1Img);
-
-        progressFill.style.width = '90%';
-        progressLabel.textContent = 'Menyusun hasil...';
-        await renderAIResult(inputImgEl.src, pass2);
+        try {
+          await runPipeline(progressFill, progressLabel, inputImgEl);
+        } catch (err) {
+          // GPU/browser sebagian device gagal compile shader WebGL — otomatis coba mode CPU
+          if (isShaderOrGpuError(err) && currentBackend !== 'cpu') {
+            console.warn('WebGL gagal, mencoba mode CPU:', err);
+            progressLabel.textContent = 'GPU tidak kompatibel, mencoba mode CPU (lebih lambat)...';
+            await ensureBackend('cpu');
+            await runPipeline(progressFill, progressLabel, inputImgEl);
+          } else {
+            throw err;
+          }
+        }
 
         progressFill.style.width = '100%';
         progressLabel.textContent = 'Selesai!';
@@ -78,7 +110,7 @@
         if (tag) tag.textContent = 'Diproses AI (ESRGAN, 4x) — detail ditambahkan model, bukan sekadar resize';
       } catch (err) {
         console.error(err);
-        alert('Gagal memproses: ' + err.message + '\n\nCoba pakai gambar yang lebih kecil, atau pastikan koneksi internet stabil (model perlu diunduh sekali).');
+        alert('Gagal memproses di device ini (sudah dicoba mode GPU dan CPU): ' + err.message + '\n\nCoba pakai gambar yang lebih kecil, browser lain (Chrome disarankan), atau gunakan tombol "HD Server Asli" sebagai gantinya.');
       } finally {
         aiBtn.disabled = false;
       }
