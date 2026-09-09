@@ -1,7 +1,9 @@
 /* ai-mode.js — versi SIMPLE, 100% jalan di browser, tanpa server/akun/API key.
-   Pakai UpscalerJS (model AI ESRGAN via TensorFlow.js) yang dimuat lewat CDN
-   di index.html. Detail gambar benar-benar ditambah oleh neural network,
-   bukan sekadar resize + sharpen.
+   Pakai UpscalerJS (model AI ESRGAN "Thick" 4x via TensorFlow.js) yang dimuat lewat CDN
+   di index.html. Detail gambar benar-benar ditambah oleh neural network dalam SATU kali
+   pass 4x asli — bukan dua kali pass 2x yang dirantai (cara lama), karena merantai dua
+   pass GAN saling menumpuk halusinasi detail satu sama lain dan itulah yang bikin hasil
+   "pecah"/bertekstur aneh saat di-zoom. Satu model 4x asli jauh lebih bersih dan stabil.
 
    Cara pakai: cukup taruh file ini satu folder dengan index.html, sudah otomatis
    terpanggil karena index.html sudah berisi <script src="ai-mode.js"></script>.
@@ -13,7 +15,8 @@
 
   function getUpscaler() {
     if (!upscalerInstance) {
-      upscalerInstance = new Upscaler({ model: DefaultUpscalerJSModel });
+      // ESRGANThick4x diekspos secara global oleh script CDN esrgan-thick/4x.min.js
+      upscalerInstance = new Upscaler({ model: ESRGANThick4x });
     }
     return upscalerInstance;
   }
@@ -28,7 +31,7 @@
 
   function isShaderOrGpuError(err) {
     const msg = (err && err.message ? err.message : String(err)).toLowerCase();
-    return msg.includes('shader') || msg.includes('webgl') || msg.includes('gpu') || msg.includes('context');
+    return msg.includes('shader') || msg.includes('webgl') || msg.includes('gpu') || msg.includes('context') || msg.includes('memory');
   }
 
   document.addEventListener('DOMContentLoaded', () => {
@@ -42,8 +45,9 @@
         🚀 HD Asli (AI, 4x) — sekali klik
       </button>
       <div style="font-size:11.5px;color:var(--text-2);margin-top:6px;">
-        Proses AI berjalan langsung di browser kamu. Pertama kali dipakai butuh
-        beberapa detik untuk mengunduh model (±3-5MB), setelah itu lebih cepat.
+        Proses AI berjalan langsung di browser kamu, satu kali pass model 4x (bukan 2x dua kali)
+        supaya hasil lebih halus dan tidak pecah saat di-zoom. Pertama kali dipakai butuh
+        beberapa detik untuk mengunduh model (±4-6MB), setelah itu lebih cepat.
       </div>
     `;
     processBtn.insertAdjacentElement('afterend', wrap);
@@ -53,23 +57,24 @@
     async function runPipeline(progressFill, progressLabel, inputImgEl) {
       const upscaler = getUpscaler();
 
-      // Batasi ukuran input dulu biar tidak terlalu berat untuk browser
-      const safeSrc = await limitSize(inputImgEl, 1000);
+      // Batasi ukuran input dulu biar tidak terlalu berat untuk browser.
+      // Karena sekarang cuma SATU pass (bukan dua), ini juga yang membuat hasil akhir
+      // tidak "kehilangan" warna asli — tidak ada bolak-balik encode PNG antar-pass lagi.
+      const safeSrc = await limitSize(inputImgEl, 1024);
 
-      // Pass 1: AI upscale 2x (detail asli ditambah oleh model)
-      progressFill.style.width = '35%';
-      progressLabel.textContent = 'AI menambah detail (langkah 1/2)...';
-      const pass1 = await upscaler.upscale(safeSrc);
-
-      // Pass 2: AI upscale 2x lagi dari hasil pass 1 → total kira-kira 4x
-      progressFill.style.width = '70%';
-      progressLabel.textContent = 'AI menambah detail (langkah 2/2, menuju 4x)...';
-      const pass1Img = await loadImage(pass1);
-      const pass2 = await upscaler.upscale(pass1Img);
+      progressFill.style.width = '25%';
+      progressLabel.textContent = 'AI menambah detail (model 4x, satu pass)...';
+      const resultDataUrl = await upscaler.upscale(safeSrc, {
+        patchSize: 64,
+        padding: 4,
+        progress: (rate) => {
+          progressFill.style.width = (25 + rate * 60) + '%';
+        },
+      });
 
       progressFill.style.width = '90%';
       progressLabel.textContent = 'Menyusun hasil...';
-      await renderAIResult(inputImgEl.src, pass2);
+      await renderAIResult(inputImgEl.src, resultDataUrl);
     }
 
     aiBtn.addEventListener('click', async () => {
@@ -107,7 +112,7 @@
         progressFill.style.width = '100%';
         progressLabel.textContent = 'Selesai!';
         const tag = document.getElementById('outputTagText');
-        if (tag) tag.textContent = 'Diproses AI (ESRGAN, 4x) — detail ditambahkan model, bukan sekadar resize';
+        if (tag) tag.textContent = 'Diproses AI (ESRGAN Thick, 4x satu-pass) — detail ditambahkan model, warna asli dipertahankan';
       } catch (err) {
         console.error(err);
         alert('Gagal memproses di device ini (sudah dicoba mode GPU dan CPU): ' + err.message + '\n\nCoba pakai gambar yang lebih kecil, browser lain (Chrome disarankan), atau gunakan tombol "HD Server Asli" sebagai gantinya.');
@@ -124,19 +129,15 @@
       const canvas = document.createElement('canvas');
       canvas.width = Math.round(imgEl.naturalWidth * scale);
       canvas.height = Math.round(imgEl.naturalHeight * scale);
-      canvas.getContext('2d').drawImage(imgEl, 0, 0, canvas.width, canvas.height);
+      // 'high' quality smoothing di sini penting: downscale yang buruk sebelum masuk
+      // ke model AI akan ikut merusak warna/detail hasil akhirnya.
+      const ctx = canvas.getContext('2d');
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+      ctx.drawImage(imgEl, 0, 0, canvas.width, canvas.height);
       const out = new Image();
       out.onload = () => resolve(out);
-      out.src = canvas.toDataURL('image/png');
-    });
-  }
-
-  function loadImage(src) {
-    return new Promise((resolve, reject) => {
-      const img = new Image();
-      img.onload = () => resolve(img);
-      img.onerror = reject;
-      img.src = src;
+      out.src = canvas.toDataURL('image/png'); // PNG = lossless, tidak ada kompresi yang menggeser warna
     });
   }
 
