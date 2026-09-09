@@ -357,7 +357,9 @@
 </style>
 <!-- Library AI upscaling (jalan langsung di browser, tanpa server/akun) -->
 <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@upscalerjs/default-model@latest/dist/umd/index.min.js"></script>
+<!-- ESRGAN Thick 4x: model AI satu-pass beneran 4x (bukan 2x dirantai dua kali),
+     jaringan paling "dalam"/berkualitas di keluarga ESRGAN-nya UpscalerJS -->
+<script src="https://cdn.jsdelivr.net/npm/@upscalerjs/esrgan-thick@latest/dist/umd/4x.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/upscaler@latest/dist/browser/umd/upscaler.min.js"></script>
 </head>
 <body>
@@ -865,21 +867,41 @@
     return out2;
   }
   function finalizeDetail(data, w, h, amount){
-    const blurred = boxBlurPass(data, w, h, 2);
+    // Sharpening dilakukan HANYA pada channel luma (kecerahan), bukan per-channel R/G/B
+    // secara terpisah. Menajamkan R, G, B sendiri-sendiri gampang menyebabkan "color
+    // fringing" (warna pelangi tipis di tepi objek) dan makin parah kalau di-zoom.
+    // Dengan luma-only sharpening, warna asli (chroma/Cb,Cr) tidak pernah disentuh sama
+    // sekali, jadi hasilnya lebih tajam tapi warnanya tetap setia ke gambar asli.
+    const n = data.length/4;
+    const luma = new Float32Array(n);
+    const cb = new Float32Array(n);
+    const cr = new Float32Array(n);
+    for(let i=0, p=0; i<data.length; i+=4, p++){
+      const r=data[i], g=data[i+1], b=data[i+2];
+      luma[p] = 0.299*r + 0.587*g + 0.114*b;
+      cb[p]   = -0.168736*r - 0.331264*g + 0.5*b + 128;
+      cr[p]   = 0.5*r - 0.418688*g - 0.081312*b + 128;
+    }
+    // blur luma saja (pack ke buffer RGBA dummy supaya bisa pakai boxBlurPass yang ada)
+    const lumaRGBA = new Float32Array(n*4);
+    for(let p=0;p<n;p++){ lumaRGBA[p*4]=luma[p]; }
+    const blurredRGBA = boxBlurPass(lumaRGBA, w, h, 2);
+
     const out = new Uint8ClampedArray(data.length);
-    const contrast = 1.02, satAmt = 0.05;
-    for(let i=0;i<data.length;i+=4){
-      let r = data[i]   + amount*(data[i]   - blurred[i]);
-      let g = data[i+1] + amount*(data[i+1] - blurred[i+1]);
-      let b = data[i+2] + amount*(data[i+2] - blurred[i+2]);
-      r = (r-128)*contrast+128; g = (g-128)*contrast+128; b = (b-128)*contrast+128;
-      const avg = (r+g+b)/3;
-      // makin dekat ke putih (highlight), makin dikecilkan boost saturasinya —
-      // supaya channel yang lebih dulu mentok 255 tidak bikin warna geser ke oranye
-      const maxCh = Math.max(r,g,b);
-      const highlightSafe = 1 - Math.min(1, Math.max(0, (maxCh-225)/30));
-      const satNow = satAmt * highlightSafe;
-      r += (r-avg)*satNow; g += (g-avg)*satNow; b += (b-avg)*satNow;
+    // Halo clamp: batasi hasil tajam supaya tidak overshoot jauh dari nilai piksel
+    // tetangga asli — inilah yang mencegah tekstur "pecah"/ringing saat di-zoom besar.
+    const haloLimit = 40;
+    for(let i=0, p=0; i<data.length; i+=4, p++){
+      const l0 = luma[p], lb = blurredRGBA[p*4];
+      let boosted = l0 + amount*(l0 - lb);
+      boosted = Math.max(l0-haloLimit, Math.min(l0+haloLimit, boosted));
+      const newLuma = Math.max(0, Math.min(255, boosted));
+
+      const Cb = cb[p], Cr = cr[p];
+      let r = newLuma + 1.402*(Cr-128);
+      let g = newLuma - 0.344136*(Cb-128) - 0.714136*(Cr-128);
+      let b = newLuma + 1.772*(Cb-128);
+
       out[i]=r; out[i+1]=g; out[i+2]=b; out[i+3]=data[i+3];
     }
     return out;
