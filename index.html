@@ -1,7 +1,6 @@
 <!DOCTYPE html>
 <html lang="id">
 <head>
-  <link rel="icon" type="image/svg+xml" href="logo.svg" />
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 <title>BHYON HD</title>
@@ -868,79 +867,111 @@
   function finalizeDetail(data, w, h, amount){
     const blurred = boxBlurPass(data, w, h, 2);
     const out = new Uint8ClampedArray(data.length);
-    const contrast = 1.08, satAmt = 0.12;
+    const contrast = 1.02, satAmt = 0.05;
     for(let i=0;i<data.length;i+=4){
       let r = data[i]   + amount*(data[i]   - blurred[i]);
       let g = data[i+1] + amount*(data[i+1] - blurred[i+1]);
       let b = data[i+2] + amount*(data[i+2] - blurred[i+2]);
       r = (r-128)*contrast+128; g = (g-128)*contrast+128; b = (b-128)*contrast+128;
       const avg = (r+g+b)/3;
-      r += (r-avg)*satAmt; g += (g-avg)*satAmt; b += (b-avg)*satAmt;
+      // makin dekat ke putih (highlight), makin dikecilkan boost saturasinya —
+      // supaya channel yang lebih dulu mentok 255 tidak bikin warna geser ke oranye
+      const maxCh = Math.max(r,g,b);
+      const highlightSafe = 1 - Math.min(1, Math.max(0, (maxCh-225)/30));
+      const satNow = satAmt * highlightSafe;
+      r += (r-avg)*satNow; g += (g-avg)*satNow; b += (b-avg)*satNow;
       out[i]=r; out[i+1]=g; out[i+2]=b; out[i+3]=data[i+3];
     }
     return out;
   }
 
   async function runEnhancement(){
-    const img = currentImage;
-    const srcW0 = img.naturalWidth, srcH0 = img.naturalHeight;
+    try {
+      const img = currentImage;
+      const srcW0 = img.naturalWidth, srcH0 = img.naturalHeight;
 
-    // cap working source size for a bounded, responsive processing time
-    const WORK_MAX = 2400;
-    const longestSrc = Math.max(srcW0, srcH0);
-    const workScale = longestSrc > WORK_MAX ? WORK_MAX/longestSrc : 1;
-    const srcW = Math.round(srcW0*workScale), srcH = Math.round(srcH0*workScale);
+      // cap working source size for a bounded, responsive processing time
+      const WORK_MAX = 2400;
+      const longestSrc = Math.max(srcW0, srcH0);
+      const workScale = longestSrc > WORK_MAX ? WORK_MAX/longestSrc : 1;
+      const srcW = Math.round(srcW0*workScale), srcH = Math.round(srcH0*workScale);
 
-    const srcCanvas = document.createElement('canvas');
-    srcCanvas.width = srcW; srcCanvas.height = srcH;
-    const srcCtx = srcCanvas.getContext('2d');
-    srcCtx.imageSmoothingEnabled = true;
-    srcCtx.imageSmoothingQuality = 'high';
-    srcCtx.drawImage(img, 0, 0, srcW, srcH);
-    const srcImageData = srcCtx.getImageData(0, 0, srcW, srcH);
+      const srcCanvas = document.createElement('canvas');
+      srcCanvas.width = srcW; srcCanvas.height = srcH;
+      const srcCtx = srcCanvas.getContext('2d');
+      srcCtx.imageSmoothingEnabled = true;
+      srcCtx.imageSmoothingQuality = 'high';
+      srcCtx.drawImage(img, 0, 0, srcW, srcH);
+      let srcImageData = srcCtx.getImageData(0, 0, srcW, srcH);
 
-    updateProgress(4, 'Membaca piksel gambar...');
-    await yieldNow();
+      updateProgress(4, 'Membaca piksel gambar...');
+      await yieldNow();
 
-    const denoised = await bilateralDenoise(srcImageData.data, srcW, srcH, p=> updateProgress(4 + p*28, 'Mengurangi noise (bilateral filter)...'));
+      let denoised = await bilateralDenoise(srcImageData.data, srcW, srcH, p=> updateProgress(4 + p*28, 'Mengurangi noise (bilateral filter)...'));
+      srcImageData = null; // sudah tidak dipakai lagi — bebaskan memori sebelum tahap berikutnya
 
-    let targetW = srcW0 * (selectedTarget/Math.max(srcW0,srcH0));
-    let targetH = srcH0 * (selectedTarget/Math.max(srcW0,srcH0));
-    targetW = Math.round(targetW); targetH = Math.round(targetH);
+      let targetW = srcW0 * (selectedTarget/Math.max(srcW0,srcH0));
+      let targetH = srcH0 * (selectedTarget/Math.max(srcW0,srcH0));
+      targetW = Math.round(targetW); targetH = Math.round(targetH);
 
-    const resized = await lanczosResize(denoised, srcW, srcH, targetW, targetH, p=> updateProgress(32 + p*48, 'Upscaling Lanczos ke resolusi target...'));
+      // ---- Pengaman memori: batasi total piksel keluaran sesuai kira-kira kapasitas perangkat ----
+      // navigator.deviceMemory (GB) cuma tersedia di sebagian browser (mis. Chrome); kalau tidak ada, anggap konservatif 4GB.
+      const deviceGB = (navigator.deviceMemory || 4);
+      const safeMaxMP = deviceGB * 7; // megapiksel aman per GB RAM, angka konservatif dari uji coba
+      const requestedMP = (targetW*targetH)/1e6;
+      let autoDowngraded = false;
+      if(requestedMP > safeMaxMP){
+        const shrink = Math.sqrt(safeMaxMP/requestedMP);
+        targetW = Math.round(targetW*shrink);
+        targetH = Math.round(targetH*shrink);
+        autoDowngraded = true;
+      }
 
-    updateProgress(82, 'Menajamkan & menyempurnakan detail...');
-    await yieldNow();
-    const clamped = new Uint8ClampedArray(resized.length);
-    for(let i=0;i<resized.length;i++) clamped[i] = resized[i];
-    const finalPixels = finalizeDetail(clamped, targetW, targetH, 0.9);
-    updateProgress(95, 'Menyusun gambar akhir...');
-    await yieldNow();
+      let resized = await lanczosResize(denoised, srcW, srcH, targetW, targetH, p=> updateProgress(32 + p*48, 'Upscaling Lanczos ke resolusi target...'));
+      denoised = null; // bebaskan buffer sebelum tahap sharpening yang butuh memori besar
+      await yieldNow();
 
-    outputCanvas.width = targetW;
-    outputCanvas.height = targetH;
-    const outCtx = outputCanvas.getContext('2d');
-    outCtx.putImageData(new ImageData(finalPixels, targetW, targetH), 0, 0);
+      updateProgress(82, 'Menajamkan & menyempurnakan detail...');
+      await yieldNow();
 
-    // build a naive (unprocessed) upscale at the same target size, purely for side-by-side comparison
-    const naiveCanvas = document.createElement('canvas');
-    naiveCanvas.width = targetW; naiveCanvas.height = targetH;
-    const naiveCtx = naiveCanvas.getContext('2d');
-    naiveCtx.imageSmoothingEnabled = true;
-    naiveCtx.imageSmoothingQuality = 'high';
-    naiveCtx.drawImage(img, 0, 0, targetW, targetH);
+      // Upscale besar butuh sharpening lebih lembut, supaya tidak muncul tekstur "pecah"/ringing saat di-zoom
+      const upscaleRatio = targetW / srcW;
+      const sharpenAmount = Math.min(0.45, Math.max(0.22, 1/upscaleRatio));
 
-    beforeImg.src = naiveCanvas.toDataURL('image/png');
-    afterImg.src = outputCanvas.toDataURL('image/png');
-    setSliderPercent(50);
+      const finalPixels = finalizeDetail(resized, targetW, targetH, sharpenAmount);
+      resized = null; // sudah tidak dipakai lagi
+      updateProgress(95, 'Menyusun gambar akhir...');
+      await yieldNow();
 
-    updateProgress(100, 'Selesai!');
-    outputEmpty.style.display = 'none';
-    outputFrame.style.display = 'block';
-    outputTag.style.display = 'flex';
-    document.getElementById('outputTagText').textContent =
-      targetW + '×' + targetH + ' px · noise direduksi · upscale Lanczos · wajah & rasio tidak diubah';
+      outputCanvas.width = targetW;
+      outputCanvas.height = targetH;
+      const outCtx = outputCanvas.getContext('2d');
+      outCtx.putImageData(new ImageData(finalPixels, targetW, targetH), 0, 0);
+
+      // build a naive (unprocessed) upscale at the same target size, purely for side-by-side comparison
+      const naiveCanvas = document.createElement('canvas');
+      naiveCanvas.width = targetW; naiveCanvas.height = targetH;
+      const naiveCtx = naiveCanvas.getContext('2d');
+      naiveCtx.imageSmoothingEnabled = true;
+      naiveCtx.imageSmoothingQuality = 'high';
+      naiveCtx.drawImage(img, 0, 0, targetW, targetH);
+
+      beforeImg.src = naiveCanvas.toDataURL('image/png');
+      afterImg.src = outputCanvas.toDataURL('image/png');
+      setSliderPercent(50);
+
+      updateProgress(100, 'Selesai!');
+      outputEmpty.style.display = 'none';
+      outputFrame.style.display = 'block';
+      outputTag.style.display = 'flex';
+      document.getElementById('outputTagText').textContent =
+        targetW + '×' + targetH + ' px · noise direduksi · upscale Lanczos · wajah & rasio tidak diubah' +
+        (autoDowngraded ? ' · resolusi disesuaikan otomatis agar aman di perangkat ini' : '');
+    } catch(err){
+      console.error(err);
+      progressWrap.classList.remove('active');
+      alert('Gagal memproses pada resolusi ini (kemungkinan memori perangkat tidak cukup untuk resolusi sebesar itu). Coba pilih resolusi yang lebih rendah (2K atau 4K), atau gunakan foto dengan ukuran file lebih kecil.');
+    }
   }
 
   // ---------- Before/after compare slider ----------
