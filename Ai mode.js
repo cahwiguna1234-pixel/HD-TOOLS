@@ -1,175 +1,1205 @@
-/* ai-mode.js — versi SIMPLE, 100% jalan di browser, tanpa server/akun/API key.
-   Pakai UpscalerJS (model AI ESRGAN "Thick" 4x via TensorFlow.js) yang dimuat lewat CDN
-   di index.html. Detail gambar benar-benar ditambah oleh neural network dalam SATU kali
-   pass 4x asli — bukan dua kali pass 2x yang dirantai (cara lama), karena merantai dua
-   pass GAN saling menumpuk halusinasi detail satu sama lain dan itulah yang bikin hasil
-   "pecah"/bertekstur aneh saat di-zoom. Satu model 4x asli jauh lebih bersih dan stabil.
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>BHYON HD</title>
+  <link rel="icon" type="image/svg+xml" href="logo.svg">
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&display=swap');
 
-   Cara pakai: cukup taruh file ini satu folder dengan index.html, sudah otomatis
-   terpanggil karena index.html sudah berisi <script src="ai-mode.js"></script>.
-   Tidak perlu langkah lain — buka index.html di browser, selesai.
-*/
-(function () {
-  let upscalerInstance = null;
-  let currentBackend = null;
-
-  function getUpscaler() {
-    if (!upscalerInstance) {
-      // ESRGANThick4x diekspos secara global oleh script CDN esrgan-thick/4x.min.js
-      upscalerInstance = new Upscaler({ model: ESRGANThick4x });
-    }
-    return upscalerInstance;
+  :root{
+    --bg-0:#050b08;
+    --bg-1:#0b1712;
+    --panel:#0e1a15;
+    --panel-2:#101f19;
+    --border:#1c2c24;
+    --border-soft:#16241d;
+    --text-1:#eaf4ee;
+    --text-2:#93a89c;
+    --text-3:#5e7267;
+    --accent:#37e29a;
+    --accent-dim:#1f7a56;
+    --accent-glow:rgba(55,226,154,0.28);
+    --danger:#e2694f;
+    --radius-lg:18px;
+    --radius-md:12px;
+    --radius-sm:8px;
   }
 
-  async function ensureBackend(name) {
-    if (currentBackend === name) return;
-    await tf.setBackend(name);
-    await tf.ready();
-    currentBackend = name;
-    upscalerInstance = null; // model perlu dibuat ulang kalau backend berganti
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;}
+  body{
+    background:var(--bg-0);
+    color:var(--text-1);
+    font-family:'Inter',system-ui,sans-serif;
+    min-height:100vh;
+    position:relative;
+    overflow-x:hidden;
   }
 
-  function isShaderOrGpuError(err) {
-    const msg = (err && err.message ? err.message : String(err)).toLowerCase();
-    return msg.includes('shader') || msg.includes('webgl') || msg.includes('gpu') || msg.includes('context') || msg.includes('memory');
+  /* ambient background */
+  .ambient{position:fixed;inset:0;z-index:0;overflow:hidden;pointer-events:none;}
+  .blob{position:absolute;border-radius:50%;filter:blur(90px);opacity:0.16;}
+  .blob-a{width:520px;height:520px;background:var(--accent);top:-160px;left:-120px;animation:drift1 26s ease-in-out infinite;}
+  .blob-b{width:460px;height:460px;background:#1a6b48;bottom:-160px;right:-100px;animation:drift2 30s ease-in-out infinite;}
+  @keyframes drift1{
+    0%,100%{transform:translate(0,0);}
+    50%{transform:translate(60px,50px);}
+  }
+  @keyframes drift2{
+    0%,100%{transform:translate(0,0);}
+    50%{transform:translate(-50px,-40px);}
+  }
+  @media (prefers-reduced-motion: reduce){
+    .blob-a,.blob-b{animation:none;}
   }
 
-  document.addEventListener('DOMContentLoaded', () => {
-    const processBtn = document.getElementById('processBtn');
-    if (!processBtn) return;
+  .shell{position:relative;z-index:1;max-width:1080px;margin:0 auto;padding:28px 20px 80px;}
 
-    const wrap = document.createElement('div');
-    wrap.style.marginTop = '10px';
-    wrap.innerHTML = `
-      <button type="button" id="aiProcessBtn" class="process-btn" style="background:linear-gradient(135deg,#37e29a,#1f9f6c);">
-        🚀 HD Asli (AI, 4x) — sekali klik
-      </button>
-      <div style="font-size:11.5px;color:var(--text-2);margin-top:6px;">
-        Proses AI berjalan langsung di browser kamu, satu kali pass model 4x (bukan 2x dua kali)
-        supaya hasil lebih halus dan tidak pecah saat di-zoom. Pertama kali dipakai butuh
-        beberapa detik untuk mengunduh model (±4-6MB), setelah itu lebih cepat.
+  /* header */
+  header{display:flex;align-items:center;justify-content:space-between;gap:20px;flex-wrap:wrap;margin-bottom:36px;}
+  .brand{display:flex;align-items:center;gap:12px;}
+  .mark{width:38px;height:38px;flex-shrink:0;}
+  .brand-text h1{
+    font-family:'Space Grotesk',sans-serif;
+    font-size:19px;
+    font-weight:700;
+    margin:0;
+    letter-spacing:0.2px;
+    color:var(--text-1);
+  }
+  .brand-text p{margin:1px 0 0;font-size:12.5px;color:var(--text-3);}
+
+  .tabs{
+    display:flex;
+    position:relative;
+    background:var(--panel);
+    border:1px solid var(--border);
+    border-radius:999px;
+    padding:4px;
+    gap:2px;
+  }
+  .tab-btn{
+    position:relative;
+    z-index:2;
+    border:none;
+    background:transparent;
+    color:var(--text-2);
+    font-family:'Inter',sans-serif;
+    font-size:13.5px;
+    font-weight:500;
+    padding:9px 18px;
+    border-radius:999px;
+    cursor:pointer;
+    transition:color .25s ease;
+    white-space:nowrap;
+  }
+  .tab-btn.active{color:#03140d;}
+  .tab-pill{
+    position:absolute;
+    top:4px;bottom:4px;
+    border-radius:999px;
+    background:var(--accent);
+    box-shadow:0 0 18px var(--accent-glow);
+    transition:left .35s cubic-bezier(.65,0,.35,1), width .35s cubic-bezier(.65,0,.35,1);
+    z-index:1;
+  }
+
+  .panel-view{display:none;}
+  .panel-view.active{display:block;animation:fadein .4s ease;}
+  @keyframes fadein{from{opacity:0;transform:translateY(6px);}to{opacity:1;transform:translateY(0);}}
+
+  /* --- Deskripsi tab --- */
+  .hero-line{font-size:12.5px;color:var(--accent);font-weight:600;margin:0 0 10px;}
+  h2.section-title{
+    font-family:'Space Grotesk',sans-serif;
+    font-size:28px;
+    line-height:1.25;
+    margin:0 0 14px;
+    max-width:560px;
+    font-weight:600;
+  }
+  .lead{color:var(--text-2);font-size:15px;line-height:1.7;max-width:560px;margin:0 0 30px;}
+
+  .rules-card{
+    background:var(--panel);
+    border:1px solid var(--border);
+    border-radius:var(--radius-lg);
+    padding:26px 26px 22px;
+    margin-bottom:28px;
+  }
+  .rules-card .card-head{display:flex;align-items:center;gap:10px;margin-bottom:16px;}
+  .rules-card .card-head svg{flex-shrink:0;}
+  .rules-card .card-head span{font-size:14px;font-weight:600;color:var(--text-1);}
+  .rule-row{
+    display:flex;gap:12px;
+    padding:13px 0;
+    border-top:1px solid var(--border-soft);
+  }
+  .rule-row:first-of-type{border-top:none;}
+  .rule-row .dot{
+    width:6px;height:6px;border-radius:50%;background:var(--accent);
+    margin-top:8px;flex-shrink:0;
+    box-shadow:0 0 8px var(--accent-glow);
+  }
+  .rule-row .rule-text b{display:block;font-size:13.5px;color:var(--text-1);margin-bottom:3px;font-weight:600;}
+  .rule-row .rule-text p{margin:0;font-size:13px;color:var(--text-2);line-height:1.6;}
+
+  .diagram-wrap{
+    background:var(--panel);
+    border:1px solid var(--border);
+    border-radius:var(--radius-lg);
+    padding:26px;
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    gap:14px;
+  }
+  .diagram-row{display:flex;align-items:center;gap:22px;flex-wrap:wrap;justify-content:center;}
+  .diagram-card{
+    width:150px;text-align:center;
+  }
+  .diagram-frame{
+    width:150px;height:150px;
+    border-radius:var(--radius-md);
+    border:1px solid var(--border);
+    display:flex;align-items:center;justify-content:center;
+    background:var(--panel-2);
+    position:relative;
+    overflow:hidden;
+  }
+  .diagram-frame.sharp{border-color:var(--accent-dim);box-shadow:inset 0 0 0 1px rgba(55,226,154,.15), 0 0 24px rgba(55,226,154,.10);}
+  .diagram-frame span.tag{
+    position:absolute;top:8px;left:8px;
+    font-size:9.5px;letter-spacing:.3px;
+    background:rgba(0,0,0,0.4);
+    padding:3px 7px;border-radius:6px;
+    color:var(--text-2);
+  }
+  .diagram-frame.sharp span.tag{color:var(--accent);}
+  .diagram-label{font-size:12px;color:var(--text-2);margin-top:9px;}
+  .arrow-icon{color:var(--accent);flex-shrink:0;}
+  .ref-caption{font-size:12px;color:var(--text-3);font-style:italic;margin-top:2px;}
+
+  /* --- Generate tab --- */
+  .gen-grid{display:grid;grid-template-columns:1fr 1fr;gap:20px;align-items:start;}
+  @media (max-width:760px){.gen-grid{grid-template-columns:1fr;}}
+
+  .col-title{font-size:12.5px;font-weight:600;color:var(--text-2);text-transform:none;margin:0 0 10px;letter-spacing:0.2px;}
+
+  .dropzone{
+    position:relative;
+    border:1.5px dashed var(--border);
+    border-radius:var(--radius-lg);
+    background:var(--panel);
+    min-height:300px;
+    display:flex;
+    flex-direction:column;
+    align-items:center;
+    justify-content:center;
+    gap:12px;
+    text-align:center;
+    padding:26px;
+    cursor:pointer;
+    transition:border-color .2s ease, box-shadow .2s ease, background .2s ease;
+  }
+  .dropzone:hover{border-color:var(--accent-dim);}
+  .dropzone.dragging{
+    border-color:var(--accent);
+    box-shadow:0 0 0 1px var(--accent), 0 0 30px var(--accent-glow);
+    background:var(--panel-2);
+  }
+  .dropzone.has-image{padding:14px;}
+  .dz-icon{
+    width:52px;height:52px;border-radius:50%;
+    background:var(--panel-2);
+    border:1px solid var(--border);
+    display:flex;align-items:center;justify-content:center;
+    color:var(--accent);
+  }
+  .dz-title{font-size:14px;font-weight:600;color:var(--text-1);}
+  .dz-sub{font-size:12.5px;color:var(--text-3);max-width:260px;line-height:1.6;}
+  .dz-sub kbd{
+    background:var(--panel-2);border:1px solid var(--border);
+    border-radius:4px;padding:1px 5px;font-family:inherit;font-size:11px;color:var(--text-2);
+  }
+
+  .preview-frame{
+    width:100%;max-height:340px;
+    border-radius:var(--radius-md);
+    overflow:hidden;
+    display:flex;align-items:center;justify-content:center;
+    background:var(--bg-1);
+  }
+  .preview-frame img{width:100%;height:100%;object-fit:contain;display:block;}
+
+  .file-meta{
+    display:flex;align-items:center;justify-content:space-between;
+    width:100%;margin-top:12px;font-size:12px;color:var(--text-3);
+  }
+  .file-meta button{
+    background:transparent;border:1px solid var(--border);color:var(--text-2);
+    font-size:12px;padding:6px 12px;border-radius:8px;cursor:pointer;
+    transition:border-color .2s ease, color .2s ease;
+  }
+  .file-meta button:hover{border-color:var(--danger);color:var(--danger);}
+
+  .scale-row{display:flex;gap:8px;margin-top:16px;}
+  .scale-btn{
+    flex:1;padding:8px 0 9px;border-radius:9px;border:1px solid var(--border);
+    background:var(--panel);color:var(--text-2);font-size:13px;font-weight:600;line-height:1.5;
+    cursor:pointer;transition:all .2s ease;
+  }
+  .scale-btn.active{
+    background:var(--accent);color:#03140d;border-color:var(--accent);
+    box-shadow:0 0 16px var(--accent-glow);
+  }
+
+  .process-btn{
+    width:100%;margin-top:16px;padding:13px 0;border-radius:11px;border:none;
+    background:var(--accent);color:#03140d;font-size:14px;font-weight:700;
+    cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;
+    box-shadow:0 0 22px var(--accent-glow);
+    transition:transform .15s ease, box-shadow .15s ease;
+  }
+  .process-btn:hover{transform:translateY(-1px);box-shadow:0 0 30px var(--accent-glow);}
+  .process-btn:disabled{opacity:.45;cursor:not-allowed;transform:none;box-shadow:none;}
+
+  .progress-wrap{margin-top:14px;display:none;}
+  .progress-wrap.active{display:block;}
+  .progress-track{height:5px;border-radius:99px;background:var(--panel-2);overflow:hidden;border:1px solid var(--border);}
+  .progress-fill{height:100%;width:0%;background:linear-gradient(90deg,var(--accent-dim),var(--accent));border-radius:99px;transition:width .35s ease;box-shadow:0 0 10px var(--accent-glow);}
+  .progress-label{font-size:12px;color:var(--text-3);margin-top:8px;}
+
+  /* output panel */
+  .output-panel{
+    background:var(--panel);border:1px solid var(--border);border-radius:var(--radius-lg);
+    min-height:300px;display:flex;flex-direction:column;align-items:center;justify-content:center;
+    padding:20px;position:relative;
+  }
+  .output-empty{color:var(--text-3);font-size:13px;text-align:center;max-width:220px;line-height:1.7;}
+  .output-empty svg{margin-bottom:10px;color:var(--text-3);}
+
+  .output-frame{position:relative;width:100%;border-radius:var(--radius-md);overflow:hidden;background:var(--bg-1);}
+  .output-frame canvas{width:100%;display:block;}
+  .output-actions{position:absolute;top:10px;right:10px;display:flex;gap:8px;z-index:5;}
+  .icon-btn{
+    width:34px;height:34px;border-radius:50%;
+    background:rgba(5,11,8,0.65);
+    backdrop-filter:blur(4px);
+    border:1px solid rgba(255,255,255,0.08);
+    color:var(--accent);
+    display:flex;align-items:center;justify-content:center;
+    cursor:pointer;transition:background .2s ease, transform .15s ease;
+  }
+  .icon-btn:hover{background:rgba(55,226,154,0.18);transform:translateY(-1px);}
+
+  .compare-wrap{
+    position:relative;width:100%;border-radius:var(--radius-md);overflow:hidden;
+    background:var(--bg-1);user-select:none;touch-action:none;
+  }
+  .compare-img{display:block;width:100%;height:auto;pointer-events:none;}
+  .compare-after{display:block;}
+  .compare-before-wrap{position:absolute;top:0;left:0;height:100%;width:50%;overflow:hidden;border-right:2px solid var(--accent);}
+  .compare-before-wrap img{position:absolute;top:0;left:0;height:100%;width:auto;max-width:none;}
+  .compare-handle{
+    position:absolute;top:0;bottom:0;left:50%;width:0;
+    transform:translateX(-50%);cursor:ew-resize;z-index:4;
+    display:flex;align-items:center;justify-content:center;
+  }
+  .handle-knob{
+    width:34px;height:34px;border-radius:50%;background:var(--accent);color:#03140d;
+    display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;
+    box-shadow:0 0 16px var(--accent-glow);
+  }
+  .compare-tag{
+    position:absolute;top:10px;font-size:10.5px;font-weight:600;letter-spacing:.3px;
+    background:rgba(5,11,8,0.65);color:var(--text-1);padding:4px 9px;border-radius:6px;z-index:3;
+  }
+  .compare-tag.left{left:10px;}
+  .compare-tag.right{right:10px;color:var(--accent);}
+  .compare-hint{font-size:11.5px;color:var(--text-3);text-align:center;margin-top:10px;}
+
+  .output-tag{
+    margin-top:14px;font-size:12px;color:var(--text-2);
+    display:flex;align-items:center;gap:6px;
+  }
+  .output-tag .live-dot{width:6px;height:6px;border-radius:50%;background:var(--accent);box-shadow:0 0 8px var(--accent-glow);animation:pulse 1.6s ease-in-out infinite;}
+  @keyframes pulse{0%,100%{opacity:1;}50%{opacity:.35;}}
+
+  /* modal */
+  .modal-overlay{
+    position:fixed;inset:0;background:rgba(3,8,6,0.86);backdrop-filter:blur(6px);
+    display:none;align-items:center;justify-content:center;z-index:50;padding:30px;
+  }
+  .modal-overlay.active{display:flex;}
+  .modal-overlay img{max-width:100%;max-height:88vh;border-radius:10px;box-shadow:0 0 60px rgba(0,0,0,0.5);}
+  .modal-close{
+    position:absolute;top:24px;right:26px;
+    width:38px;height:38px;border-radius:50%;
+    background:var(--panel);border:1px solid var(--border);color:var(--text-1);
+    display:flex;align-items:center;justify-content:center;cursor:pointer;
+  }
+
+  .toast{
+    position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(20px);
+    background:var(--panel);border:1px solid var(--border);color:var(--text-1);
+    padding:11px 18px;border-radius:10px;font-size:13px;
+    opacity:0;pointer-events:none;transition:all .3s ease;z-index:60;
+    display:flex;align-items:center;gap:8px;
+  }
+  .toast.show{opacity:1;transform:translateX(-50%) translateY(0);}
+  .toast.err{border-color:rgba(226,105,79,0.4);}
+
+  input[type=file]{display:none;}
+  :focus-visible{outline:2px solid var(--accent);outline-offset:2px;}
+</style>
+<!-- Library AI upscaling (jalan langsung di browser, tanpa server/akun) -->
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs@latest/dist/tf.min.js"></script>
+<!-- ESRGAN Thick 4x: model AI satu-pass beneran 4x (bukan 2x dirantai dua kali),
+     jaringan paling "dalam"/berkualitas di keluarga ESRGAN-nya UpscalerJS -->
+<script src="https://cdn.jsdelivr.net/npm/@upscalerjs/esrgan-thick@latest/dist/umd/4x.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/upscaler@latest/dist/browser/umd/upscaler.min.js"></script>
+</head>
+<body>
+
+<div class="ambient"><div class="blob blob-a"></div><div class="blob blob-b"></div></div>
+
+<div class="shell">
+  <header>
+    <div class="brand">
+      <svg class="mark" viewBox="0 0 40 40" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <rect x="1" y="1" width="38" height="38" rx="11" fill="#0e1a15" stroke="#1c2c24"/>
+
+        <clipPath id="markLeft"><rect x="3" y="3" width="17" height="34" rx="2"/></clipPath>
+        <clipPath id="markRight"><rect x="20" y="3" width="17" height="34" rx="2"/></clipPath>
+
+        <!-- Kiri: versi blur / resolusi rendah -->
+        <g clip-path="url(#markLeft)">
+          <circle cx="9.4" cy="13" r="3.1" fill="#4d6459" opacity=".35"/>
+          <circle cx="10.4" cy="13.3" r="3.1" fill="#4d6459" opacity=".45"/>
+          <path d="M3 32 L9.4 22.6 L13 26.4 L17.4 18.6 L21 32 Z" fill="#3b5148" opacity=".4"/>
+          <path d="M3.7 32.4 L10.1 23 L13.7 26.8 L18.1 19 L21.7 32.4 Z" fill="#3b5148" opacity=".55"/>
+        </g>
+
+        <!-- Kanan: versi tajam / HD -->
+        <g clip-path="url(#markRight)">
+          <circle cx="29.5" cy="11.5" r="2.7" fill="#37e29a"/>
+          <path d="M20 32 L26.4 22.6 L30 26.4 L34.4 18.6 L38 32 Z" fill="#37e29a"/>
+        </g>
+
+        <!-- Garis pembagi + handle, meniru slider before/after di dalam tools -->
+        <line x1="20" y1="5" x2="20" y2="35" stroke="#37e29a" stroke-width="1.2"/>
+        <circle cx="20" cy="20" r="3.6" fill="#0b1712" stroke="#37e29a" stroke-width="1.2"/>
+        <path d="M18.3 20 L17 20 M21.7 20 L23 20" stroke="#37e29a" stroke-width="1.2" stroke-linecap="round"/>
+
+        <!-- Kilau kecil penanda AI -->
+        <path d="M34 5.5 L34.7 7.1 L36.3 7.8 L34.7 8.5 L34 10.1 L33.3 8.5 L31.7 7.8 L33.3 7.1 Z" fill="#37e29a"/>
+      </svg>
+      <div class="brand-text">
+        <h1>BHYON HD</h1>
+        <p>Peningkat resolusi &amp; ketajaman foto</p>
       </div>
-    `;
-    processBtn.insertAdjacentElement('afterend', wrap);
+    </div>
 
-    const aiBtn = document.getElementById('aiProcessBtn');
+    <div class="tabs" id="tabs">
+      <div class="tab-pill" id="tabPill"></div>
+      <button class="tab-btn active" data-tab="deskripsi">App Deskripsi</button>
+      <button class="tab-btn" data-tab="generate">Generate Gambar</button>
+    </div>
+  </header>
 
-    async function runPipeline(progressFill, progressLabel, inputImgEl) {
-      const upscaler = getUpscaler();
+  <!-- ===== TAB 1: DESKRIPSI ===== -->
+  <section class="panel-view active" id="panel-deskripsi">
+    <p class="hero-line">Tentang aplikasi</p>
+    <h2 class="section-title">Foto lebih HD, tanpa mengubah siapa pun di dalamnya.</h2>
+    <p class="lead">BHYON HD memproses piksel foto Anda secara nyata lewat mesin AI super-resolution (Real-ESRGAN / ESRGAN) yang benar-benar menambah detail &mdash; bukan sekadar memperbesar dan menajamkan tepi. Sistem otomatis mencoba server GPU dulu untuk hasil terbaik, lalu AI di browser Anda kalau server tidak tersedia, dipadukan reduksi noise (bilateral filter) dan penghalusan akhir (unsharp mask) hingga resolusi 4K/6K. Semua transparan &mdash; bukan animasi placeholder &mdash; dan tidak menghasilkan wajah baru, sehingga rasio serta komposisi foto tetap persis seperti unggahan Anda.</p>
 
-      // Batasi ukuran input dulu biar tidak terlalu berat untuk browser.
-      // Karena sekarang cuma SATU pass (bukan dua), ini juga yang membuat hasil akhir
-      // tidak "kehilangan" warna asli — tidak ada bolak-balik encode PNG antar-pass lagi.
-      const safeSrc = await limitSize(inputImgEl, 1024);
+    <div class="rules-card">
+      <div class="card-head">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#37e29a" stroke-width="2"><path d="M12 3l7 3v6c0 4.6-3 8.4-7 9-4-.6-7-4.4-7-9V6l7-3Z"/></svg>
+        <span>Aturan ketat yang selalu dijaga</span>
+      </div>
+      <div class="rule-row">
+        <div class="dot"></div>
+        <div class="rule-text">
+          <b>Wajah &amp; bentuk kepala tidak berubah</b>
+          <p>Struktur wajah, bentuk kepala, dan proporsi asli dipertahankan sepenuhnya &mdash; hanya ketajaman dan resolusi yang ditingkatkan.</p>
+        </div>
+      </div>
+      <div class="rule-row">
+        <div class="dot"></div>
+        <div class="rule-text">
+          <b>Ekspresi boleh terlihat lebih halus</b>
+          <p>Satu-satunya elemen yang boleh sedikit disempurnakan adalah kehalusan ekspresi, bukan bentuk wajahnya.</p>
+        </div>
+      </div>
+      <div class="rule-row">
+        <div class="dot"></div>
+        <div class="rule-text">
+          <b>Bentuk &amp; rasio foto tetap sama</b>
+          <p>Komposisi, rasio, dan bingkai foto tidak dipotong atau diubah &mdash; hanya kualitas gambarnya yang naik ke level HD.</p>
+        </div>
+      </div>
+    </div>
 
-      progressFill.style.width = '25%';
-      progressLabel.textContent = 'AI menambah detail (model 4x, satu pass)...';
-      const resultDataUrl = await upscaler.upscale(safeSrc, {
-        patchSize: 64,
-        padding: 4,
-        progress: (rate) => {
-          progressFill.style.width = (25 + rate * 60) + '%';
-        },
-      });
+    <div class="diagram-wrap">
+      <div class="diagram-row">
+        <div class="diagram-card">
+          <div class="diagram-frame">
+            <span class="tag">SEBELUM</span>
+            <svg width="56" height="56" viewBox="0 0 56 56"><circle cx="28" cy="22" r="12" fill="none" stroke="#5e7267" stroke-width="1.6"/><path d="M10 50c2-11 9-16 18-16s16 5 18 16" fill="none" stroke="#5e7267" stroke-width="1.6"/></svg>
+          </div>
+          <p class="diagram-label">Resolusi standar</p>
+        </div>
+        <svg class="arrow-icon" width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14M13 6l6 6-6 6"/></svg>
+        <div class="diagram-card">
+          <div class="diagram-frame sharp">
+            <span class="tag">SESUDAH</span>
+            <svg width="56" height="56" viewBox="0 0 56 56"><circle cx="28" cy="22" r="12" fill="none" stroke="#37e29a" stroke-width="2"/><path d="M10 50c2-11 9-16 18-16s16 5 18 16" fill="none" stroke="#37e29a" stroke-width="2"/></svg>
+          </div>
+          <p class="diagram-label">Hasil BHYON HD</p>
+        </div>
+      </div>
+      <p class="ref-caption">(gambar referensi)</p>
+    </div>
+  </section>
 
-      progressFill.style.width = '90%';
-      progressLabel.textContent = 'Menyusun hasil...';
-      await renderAIResult(inputImgEl.src, resultDataUrl);
+  <!-- ===== TAB 2: GENERATE ===== -->
+  <section class="panel-view" id="panel-generate">
+    <p class="hero-line">Alat generate</p>
+    <h2 class="section-title" style="font-size:24px;">Ubah foto Anda menjadi HD</h2>
+    <p class="lead" style="margin-bottom:24px;">Unggah foto, pilih resolusi target, lalu proses. Sistem otomatis menjalankan AI super-resolution (server GPU kalau tersedia, atau AI di browser Anda) untuk menambah detail asli, lalu menyesuaikan ke resolusi target dan menajamkan hasil akhir &mdash; wajah dan bentuk foto tetap sama persis, hanya kualitas gambarnya yang naik nyata.</p>
+
+    <div class="gen-grid">
+      <div>
+        <p class="col-title">Gambar input</p>
+        <div class="dropzone" id="dropzone" tabindex="0" role="button" aria-label="Upload gambar">
+          <div id="dzEmptyState">
+            <div class="dz-icon">
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 16V4M12 4l-4 4M12 4l4 4"/><path d="M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg>
+            </div>
+            <div class="dz-title">Klik, seret, atau tempel gambar</div>
+            <div class="dz-sub">Klik untuk memilih file, drag &amp; drop ke area ini, atau tekan <kbd>Ctrl+V</kbd> untuk paste dari clipboard.</div>
+          </div>
+          <div id="dzPreviewState" style="display:none;width:100%;">
+            <div class="preview-frame"><img id="inputImgEl" alt="Pratinjau gambar input" /></div>
+            <div class="file-meta">
+              <span id="fileMetaText">-</span>
+              <button type="button" id="clearBtn">Ganti gambar</button>
+            </div>
+          </div>
+        </div>
+        <input type="file" id="fileInput" accept="image/*" />
+
+        <p class="col-title" style="margin-top:20px;">Resolusi target (sisi terpanjang)</p>
+        <div class="scale-row">
+          <button class="scale-btn" data-target="2560">2K<br><span style="font-size:10px;font-weight:500;opacity:.75;">2560px</span></button>
+          <button class="scale-btn active" data-target="3840">4K<br><span style="font-size:10px;font-weight:500;opacity:.75;">3840px</span></button>
+          <button class="scale-btn" data-target="6000">6K<br><span style="font-size:10px;font-weight:500;opacity:.75;">6000px</span></button>
+        </div>
+        <p class="dz-sub" style="margin-top:8px;max-width:none;">Noise reduction &amp; sharpening otomatis aktif di setiap proses. Di HP, resolusi 6K bisa otomatis diturunkan sedikit kalau memori perangkat terbatas — supaya tidak error, bukan dikurangi kualitasnya secara sengaja.</p>
+
+        <button class="process-btn" id="processBtn" disabled>
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M12 2v4M12 18v4M4.9 4.9l2.8 2.8M16.3 16.3l2.8 2.8M2 12h4M18 12h4M4.9 19.1l2.8-2.8M16.3 7.7l2.8-2.8"/></svg>
+          Proses ke HD
+        </button>
+        <p class="dz-sub" style="margin-top:8px;max-width:none;">AI mencoba server GPU dulu untuk hasil paling tajam, otomatis pindah ke AI di browser Anda atau mode klasik kalau tidak tersedia &mdash; tanpa perlu pilih manual.</p>
+
+        <div class="progress-wrap" id="progressWrap">
+          <div class="progress-track"><div class="progress-fill" id="progressFill"></div></div>
+          <div class="progress-label" id="progressLabel">Menyiapkan...</div>
+        </div>
+      </div>
+
+      <div>
+        <p class="col-title">Hasil HD</p>
+        <div class="output-panel" id="outputPanel">
+          <div class="output-empty" id="outputEmpty">
+            <svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="#5e7267" stroke-width="1.6" style="display:block;margin:0 auto 10px;"><rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="9" cy="9" r="1.6"/><path d="m21 15-5-5-9 9"/></svg>
+            Hasil gambar HD akan muncul di sini setelah diproses.
+          </div>
+          <div class="output-frame" id="outputFrame" style="display:none;">
+            <canvas id="outputCanvas" style="display:none;"></canvas>
+            <div class="compare-wrap" id="compareWrap">
+              <img class="compare-img compare-after" id="afterImg" alt="Hasil sesudah diproses" />
+              <div class="compare-before-wrap" id="compareBeforeWrap">
+                <img class="compare-img" id="beforeImg" alt="Sebelum diproses" />
+              </div>
+              <div class="compare-handle" id="compareHandle">
+                <div class="handle-knob">⇔</div>
+              </div>
+              <span class="compare-tag left">SEBELUM</span>
+              <span class="compare-tag right">SESUDAH</span>
+              <div class="output-actions">
+                <div class="icon-btn" id="previewBtn" title="Preview" role="button" aria-label="Preview gambar">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+                </div>
+                <div class="icon-btn" id="downloadBtn" title="Unduh" role="button" aria-label="Unduh gambar">
+                  <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 3v12M7 10l5 5 5-5"/><path d="M5 21h14"/></svg>
+                </div>
+              </div>
+            </div>
+            <p class="compare-hint">Geser garis hijau untuk membandingkan sebelum/sesudah pada ukuran piksel yang sama.</p>
+          </div>
+        </div>
+        <div class="output-tag" id="outputTag" style="display:none;">
+          <span class="live-dot"></span>
+          <span id="outputTagText">Diproses secara lokal di perangkat Anda</span>
+        </div>
+      </div>
+    </div>
+  </section>
+</div>
+
+<div class="modal-overlay" id="modalOverlay">
+  <div class="modal-close" id="modalClose">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M6 6l12 12M18 6 6 18"/></svg>
+  </div>
+  <img id="modalImg" alt="Pratinjau penuh" />
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+(function(){
+  // ---------- Tabs ----------
+  const tabBtns = document.querySelectorAll('.tab-btn');
+  const tabPill = document.getElementById('tabPill');
+  const panels = { deskripsi: document.getElementById('panel-deskripsi'), generate: document.getElementById('panel-generate') };
+
+  function positionPill(btn){
+    tabPill.style.left = btn.offsetLeft + 'px';
+    tabPill.style.width = btn.offsetWidth + 'px';
+  }
+  function activateTab(name){
+    tabBtns.forEach(b=>{
+      const isActive = b.dataset.tab === name;
+      b.classList.toggle('active', isActive);
+      if(isActive) positionPill(b);
+    });
+    Object.entries(panels).forEach(([k,el])=> el.classList.toggle('active', k===name));
+  }
+  tabBtns.forEach(b=> b.addEventListener('click', ()=> activateTab(b.dataset.tab)));
+  window.addEventListener('resize', ()=>{
+    const active = document.querySelector('.tab-btn.active');
+    if(active) positionPill(active);
+  });
+  requestAnimationFrame(()=> positionPill(document.querySelector('.tab-btn.active')));
+
+  // ---------- Toast ----------
+  const toastEl = document.getElementById('toast');
+  let toastTimer;
+  function showToast(msg, isErr){
+    toastEl.textContent = msg;
+    toastEl.classList.toggle('err', !!isErr);
+    toastEl.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(()=> toastEl.classList.remove('show'), 2600);
+  }
+
+  // ---------- Upload state ----------
+  const dropzone = document.getElementById('dropzone');
+  const fileInput = document.getElementById('fileInput');
+  const dzEmptyState = document.getElementById('dzEmptyState');
+  const dzPreviewState = document.getElementById('dzPreviewState');
+  const inputImgEl = document.getElementById('inputImgEl');
+  const fileMetaText = document.getElementById('fileMetaText');
+  const clearBtn = document.getElementById('clearBtn');
+  const processBtn = document.getElementById('processBtn');
+
+  let currentImage = null; // HTMLImageElement
+  let currentFileName = 'gambar';
+
+  function loadImageFromFile(file){
+    if(!file || !file.type || file.type.indexOf('image/') !== 0){
+      showToast('File yang ditempel/diunggah bukan gambar.', true);
+      return;
     }
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+    img.onload = ()=>{
+      currentImage = img;
+      currentFileName = (file.name || 'gambar').replace(/\.[^.]+$/, '');
+      inputImgEl.src = url;
+      dzEmptyState.style.display = 'none';
+      dzPreviewState.style.display = 'block';
+      dropzone.classList.add('has-image');
+      fileMetaText.textContent = img.naturalWidth + '×' + img.naturalHeight + ' px';
+      processBtn.disabled = false;
+      resetOutput();
+      activateTab('generate');
+    };
+    img.onerror = ()=> showToast('Gagal memuat gambar.', true);
+    img.src = url;
+  }
 
-    aiBtn.addEventListener('click', async () => {
-      const inputImgEl = document.getElementById('inputImgEl');
-      if (!inputImgEl || !inputImgEl.src) {
-        alert('Unggah gambar terlebih dahulu.');
-        return;
+  // click to upload
+  dropzone.addEventListener('click', ()=> fileInput.click());
+  dropzone.addEventListener('keydown', (e)=>{ if(e.key==='Enter' || e.key===' ') fileInput.click(); });
+  fileInput.addEventListener('change', (e)=>{
+    if(e.target.files && e.target.files[0]) loadImageFromFile(e.target.files[0]);
+  });
+
+  // drag & drop
+  ['dragenter','dragover'].forEach(ev=>{
+    dropzone.addEventListener(ev, (e)=>{ e.preventDefault(); e.stopPropagation(); dropzone.classList.add('dragging'); });
+  });
+  ['dragleave','drop'].forEach(ev=>{
+    dropzone.addEventListener(ev, (e)=>{ e.preventDefault(); e.stopPropagation(); dropzone.classList.remove('dragging'); });
+  });
+  dropzone.addEventListener('drop', (e)=>{
+    const file = e.dataTransfer.files && e.dataTransfer.files[0];
+    if(file) loadImageFromFile(file);
+  });
+
+  // global clipboard paste
+  document.addEventListener('paste', (e)=>{
+    const items = e.clipboardData && e.clipboardData.items;
+    if(!items) return;
+    for(let i=0;i<items.length;i++){
+      if(items[i].type && items[i].type.indexOf('image/') === 0){
+        const file = items[i].getAsFile();
+        if(file){ loadImageFromFile(file); showToast('Gambar dari clipboard berhasil ditempel.'); }
+        break;
       }
+    }
+  });
 
-      const progressWrap = document.getElementById('progressWrap');
-      const progressFill = document.getElementById('progressFill');
-      const progressLabel = document.getElementById('progressLabel');
-      progressWrap.classList.add('active');
-      aiBtn.disabled = true;
+  clearBtn.addEventListener('click', (e)=>{
+    e.stopPropagation();
+    currentImage = null;
+    fileInput.value = '';
+    dzEmptyState.style.display = 'flex';
+    dzEmptyState.style.flexDirection = 'column';
+    dzEmptyState.style.alignItems = 'center';
+    dzEmptyState.style.gap = '12px';
+    dzPreviewState.style.display = 'none';
+    dropzone.classList.remove('has-image');
+    processBtn.disabled = true;
+    resetOutput();
+  });
 
-      try {
-        progressFill.style.width = '10%';
-        progressLabel.textContent = 'Menyiapkan model AI (pertama kali agak lama)...';
-        await ensureBackend('webgl');
-
-        try {
-          await runPipeline(progressFill, progressLabel, inputImgEl);
-        } catch (err) {
-          // GPU/browser sebagian device gagal compile shader WebGL — otomatis coba mode CPU
-          if (isShaderOrGpuError(err) && currentBackend !== 'cpu') {
-            console.warn('WebGL gagal, mencoba mode CPU:', err);
-            progressLabel.textContent = 'GPU tidak kompatibel, mencoba mode CPU (lebih lambat)...';
-            await ensureBackend('cpu');
-            await runPipeline(progressFill, progressLabel, inputImgEl);
-          } else {
-            throw err;
-          }
-        }
-
-        progressFill.style.width = '100%';
-        progressLabel.textContent = 'Selesai!';
-        const tag = document.getElementById('outputTagText');
-        if (tag) tag.textContent = 'Diproses AI (ESRGAN Thick, 4x satu-pass) — detail ditambahkan model, warna asli dipertahankan';
-      } catch (err) {
-        console.error(err);
-        alert('Gagal memproses di device ini (sudah dicoba mode GPU dan CPU): ' + err.message + '\n\nCoba pakai gambar yang lebih kecil, browser lain (Chrome disarankan), atau gunakan tombol "HD Server Asli" sebagai gantinya.');
-      } finally {
-        aiBtn.disabled = false;
-      }
+  // ---------- Resolution target selector ----------
+  let selectedTarget = 3840;
+  document.querySelectorAll('.scale-btn').forEach(btn=>{
+    btn.addEventListener('click', ()=>{
+      document.querySelectorAll('.scale-btn').forEach(b=> b.classList.remove('active'));
+      btn.classList.add('active');
+      selectedTarget = parseInt(btn.dataset.target, 10);
     });
   });
 
-  function limitSize(imgEl, maxSide) {
-    return new Promise((resolve) => {
-      const scale = Math.min(1, maxSide / Math.max(imgEl.naturalWidth, imgEl.naturalHeight));
-      if (scale === 1) { resolve(imgEl); return; }
-      const canvas = document.createElement('canvas');
-      canvas.width = Math.round(imgEl.naturalWidth * scale);
-      canvas.height = Math.round(imgEl.naturalHeight * scale);
-      // 'high' quality smoothing di sini penting: downscale yang buruk sebelum masuk
-      // ke model AI akan ikut merusak warna/detail hasil akhirnya.
-      const ctx = canvas.getContext('2d');
-      ctx.imageSmoothingEnabled = true;
-      ctx.imageSmoothingQuality = 'high';
-      ctx.drawImage(imgEl, 0, 0, canvas.width, canvas.height);
-      const out = new Image();
-      out.onload = () => resolve(out);
-      out.src = canvas.toDataURL('image/png'); // PNG = lossless, tidak ada kompresi yang menggeser warna
-    });
+  // ---------- Output ----------
+  const outputEmpty = document.getElementById('outputEmpty');
+  const outputFrame = document.getElementById('outputFrame');
+  const outputCanvas = document.getElementById('outputCanvas');
+  const outputTag = document.getElementById('outputTag');
+  const progressWrap = document.getElementById('progressWrap');
+  const progressFill = document.getElementById('progressFill');
+  const progressLabel = document.getElementById('progressLabel');
+
+  function resetOutput(){
+    outputEmpty.style.display = 'block';
+    outputFrame.style.display = 'none';
+    outputTag.style.display = 'none';
+    progressWrap.classList.remove('active');
+    progressFill.style.width = '0%';
   }
 
-  function renderAIResult(beforeSrc, afterDataUrl) {
-    return new Promise((resolve, reject) => {
-      const afterImg = document.getElementById('afterImg');
-      const beforeImg = document.getElementById('beforeImg');
-      const outputCanvas = document.getElementById('outputCanvas');
-      const outputEmpty = document.getElementById('outputEmpty');
-      const outputFrame = document.getElementById('outputFrame');
-      const outputTag = document.getElementById('outputTag');
-      const compareBeforeWrap = document.getElementById('compareBeforeWrap');
-      const compareHandle = document.getElementById('compareHandle');
+  function yieldNow(){ return new Promise(r=> setTimeout(r, 0)); }
+  function updateProgress(pct, label){
+    progressFill.style.width = Math.min(100, Math.max(0,pct)) + '%';
+    if(label) progressLabel.textContent = label;
+  }
 
-      const testImg = new Image();
-      testImg.onload = () => {
-        outputCanvas.width = testImg.naturalWidth;
-        outputCanvas.height = testImg.naturalHeight;
-        outputCanvas.getContext('2d').drawImage(testImg, 0, 0);
+  // ---- Stage 1: real bilateral denoise (edge-preserving noise reduction) ----
+  async function bilateralDenoise(data, w, h, onProgress){
+    const out = new Uint8ClampedArray(data.length);
+    out.set(data);
+    const R = 2; // 5x5 window — stronger, still edge-aware
+    const sigmaSpatial = 1.6, sigmaRange = 32;
+    const dim = R*2+1;
+    const spatial = new Float32Array(dim*dim);
+    let si = 0;
+    for(let dy=-R; dy<=R; dy++) for(let dx=-R; dx<=R; dx++){
+      spatial[si++] = Math.exp(-(dx*dx+dy*dy)/(2*sigmaSpatial*sigmaSpatial));
+    }
+    const rangeLUT = new Float32Array(256);
+    for(let d=0; d<256; d++) rangeLUT[d] = Math.exp(-(d*d)/(2*sigmaRange*sigmaRange));
 
-        beforeImg.src = beforeSrc;
-        afterImg.src = afterDataUrl;
-        compareBeforeWrap.style.width = '50%';
-        compareHandle.style.left = '50%';
+    for(let y=R; y<h-R; y++){
+      const rowBase = y*w*4;
+      for(let x=R; x<w-R; x++){
+        const idx = rowBase + x*4;
+        for(let c=0; c<3; c++){
+          const centerVal = data[idx+c];
+          let sumW=0, sumVal=0, k=0;
+          for(let dy=-R; dy<=R; dy++){
+            const nRow = idx + dy*w*4;
+            for(let dx=-R; dx<=R; dx++){
+              const nIdx = nRow + dx*4 + c;
+              const nVal = data[nIdx];
+              const diff = nVal > centerVal ? nVal-centerVal : centerVal-nVal;
+              const wgt = spatial[k++] * rangeLUT[diff];
+              sumW += wgt; sumVal += wgt*nVal;
+            }
+          }
+          out[idx+c] = sumVal / sumW;
+        }
+      }
+      if(y % 32 === 0){ onProgress(y/h); await yieldNow(); }
+    }
+    onProgress(1);
+    return out;
+  }
 
-        outputEmpty.style.display = 'none';
-        outputFrame.style.display = 'block';
-        outputTag.style.display = 'flex';
-        resolve();
-      };
-      testImg.onerror = reject;
-      testImg.src = afterDataUrl;
+  // ---- Stage 2: Lanczos-3 resampling (separable, real high-quality upscaler) ----
+  function lanczos(x, a){
+    if(x === 0) return 1;
+    if(x <= -a || x >= a) return 0;
+    const px = Math.PI * x;
+    return (a * Math.sin(px) * Math.sin(px/a)) / (px*px);
+  }
+  function buildWeights(srcSize, dstSize, a){
+    const scale = dstSize / srcSize;
+    const filterScale = scale < 1 ? 1/scale : 1;
+    const support = a * filterScale;
+    const table = [];
+    for(let d=0; d<dstSize; d++){
+      const center = (d + 0.5) / scale;
+      let start = Math.max(0, Math.floor(center - support));
+      let end = Math.min(srcSize - 1, Math.ceil(center + support));
+      const weights = [];
+      let sum = 0;
+      for(let s=start; s<=end; s++){
+        const wv = lanczos((center - (s+0.5)) / filterScale, a);
+        weights.push(wv); sum += wv;
+      }
+      if(sum !== 0){ for(let i=0;i<weights.length;i++) weights[i] /= sum; }
+      table.push({ start, weights: Float32Array.from(weights) });
+    }
+    return table;
+  }
+  async function resizeHorizontal(data, srcW, srcH, dstW, weightsX, onProgress){
+    const out = new Float32Array(dstW*srcH*4);
+    for(let y=0; y<srcH; y++){
+      const rowSrc = y*srcW*4, rowDst = y*dstW*4;
+      for(let x=0; x<dstW; x++){
+        const { start, weights } = weightsX[x];
+        let r=0,g=0,b=0,al=0;
+        for(let i=0;i<weights.length;i++){
+          const si = rowSrc + (start+i)*4, wv = weights[i];
+          r += data[si]*wv; g += data[si+1]*wv; b += data[si+2]*wv; al += data[si+3]*wv;
+        }
+        const di = rowDst + x*4;
+        out[di]=r; out[di+1]=g; out[di+2]=b; out[di+3]=al;
+      }
+      if(y % 48 === 0){ onProgress(y/srcH); await yieldNow(); }
+    }
+    onProgress(1);
+    return out;
+  }
+  async function resizeVertical(data, dstW, srcH, dstH, weightsY, onProgress){
+    const out = new Float32Array(dstW*dstH*4);
+    for(let x=0; x<dstW; x++){
+      for(let y=0; y<dstH; y++){
+        const { start, weights } = weightsY[y];
+        let r=0,g=0,b=0,al=0;
+        for(let i=0;i<weights.length;i++){
+          const si = ((start+i)*dstW + x)*4, wv = weights[i];
+          r += data[si]*wv; g += data[si+1]*wv; b += data[si+2]*wv; al += data[si+3]*wv;
+        }
+        const di = (y*dstW + x)*4;
+        out[di]=r; out[di+1]=g; out[di+2]=b; out[di+3]=al;
+      }
+      if(x % 48 === 0){ onProgress(x/dstW); await yieldNow(); }
+    }
+    onProgress(1);
+    return out;
+  }
+  async function lanczosResize(data, srcW, srcH, dstW, dstH, onProgress){
+    const wx = buildWeights(srcW, dstW, 3);
+    const wy = buildWeights(srcH, dstH, 3);
+    const horiz = await resizeHorizontal(data, srcW, srcH, dstW, wx, p=> onProgress(p*0.5));
+    const full = await resizeVertical(horiz, dstW, srcH, dstH, wy, p=> onProgress(0.5 + p*0.5));
+    return full; // Float32Array, unclamped
+  }
+
+  // ---- Stage 3: unsharp mask via fast box-blur (real sliding-window O(n) blur) ----
+  function boxBlurPass(src, w, h, radius){
+    const out = new Float32Array(src.length);
+    const norm = 1/(radius*2+1);
+    for(let y=0; y<h; y++){
+      const row = y*w*4;
+      for(let c=0;c<4;c++){
+        let sum = 0;
+        for(let k=-radius;k<=radius;k++){
+          const xx = Math.min(w-1, Math.max(0, k));
+          sum += src[row + xx*4 + c];
+        }
+        out[row + c] = sum*norm;
+        for(let x=1; x<w; x++){
+          const addX = Math.min(w-1, x+radius);
+          const remX = Math.max(0, x-radius-1);
+          sum += src[row + addX*4 + c] - src[row + remX*4 + c];
+          out[row + x*4 + c] = sum*norm;
+        }
+      }
+    }
+    const out2 = new Float32Array(src.length);
+    for(let x=0; x<w; x++){
+      for(let c=0;c<4;c++){
+        let sum = 0;
+        for(let k=-radius;k<=radius;k++){
+          const yy = Math.min(h-1, Math.max(0, k));
+          sum += out[yy*w*4 + x*4 + c];
+        }
+        out2[x*4 + c] = sum*norm;
+        for(let y=1; y<h; y++){
+          const addY = Math.min(h-1, y+radius);
+          const remY = Math.max(0, y-radius-1);
+          sum += out[addY*w*4 + x*4 + c] - out[remY*w*4 + x*4 + c];
+          out2[y*w*4 + x*4 + c] = sum*norm;
+        }
+      }
+    }
+    return out2;
+  }
+  // Versi 1-channel dari box blur di atas, khusus untuk blur luma saat sharpening.
+  // Memakai buffer RGBA 4-channel untuk data 1-channel itu boros memori 4x lipat —
+  // di gambar besar (6K), pemborosan ini yang sering bikin tab browser HP kehabisan
+  // memori dan error/nge-crash. Versi 1-channel ini memakai memori jauh lebih sedikit.
+  function boxBlur1Channel(src, w, h, radius){
+    const out = new Float32Array(src.length);
+    const norm = 1/(radius*2+1);
+    for(let y=0; y<h; y++){
+      const row = y*w;
+      let sum = 0;
+      for(let k=-radius;k<=radius;k++){
+        const xx = Math.min(w-1, Math.max(0, k));
+        sum += src[row + xx];
+      }
+      out[row] = sum*norm;
+      for(let x=1; x<w; x++){
+        const addX = Math.min(w-1, x+radius);
+        const remX = Math.max(0, x-radius-1);
+        sum += src[row + addX] - src[row + remX];
+        out[row + x] = sum*norm;
+      }
+    }
+    const out2 = new Float32Array(src.length);
+    for(let x=0; x<w; x++){
+      let sum = 0;
+      for(let k=-radius;k<=radius;k++){
+        const yy = Math.min(h-1, Math.max(0, k));
+        sum += out[yy*w + x];
+      }
+      out2[x] = sum*norm;
+      for(let y=1; y<h; y++){
+        const addY = Math.min(h-1, y+radius);
+        const remY = Math.max(0, y-radius-1);
+        sum += out[addY*w + x] - out[remY*w + x];
+        out2[y*w + x] = sum*norm;
+      }
+    }
+    return out2;
+  }
+  function finalizeDetail(data, w, h, amount){
+    // Sharpening dilakukan HANYA pada channel luma (kecerahan), bukan per-channel R/G/B
+    // secara terpisah. Menajamkan R, G, B sendiri-sendiri gampang menyebabkan "color
+    // fringing" (warna pelangi tipis di tepi objek) dan makin parah kalau di-zoom.
+    // Dengan luma-only sharpening, warna asli (chroma/Cb,Cr) tidak pernah disentuh sama
+    // sekali, jadi hasilnya lebih tajam tapi warnanya tetap setia ke gambar asli.
+    const n = data.length/4;
+    const luma = new Float32Array(n);
+    const cb = new Float32Array(n);
+    const cr = new Float32Array(n);
+    const alpha = new Uint8ClampedArray(n);
+    for(let i=0, p=0; i<data.length; i+=4, p++){
+      const r=data[i], g=data[i+1], b=data[i+2];
+      luma[p] = 0.299*r + 0.587*g + 0.114*b;
+      cb[p]   = -0.168736*r - 0.331264*g + 0.5*b + 128;
+      cr[p]   = 0.5*r - 0.418688*g - 0.081312*b + 128;
+      alpha[p] = data[i+3];
+    }
+    data = null; // 'resized' (Float32 RGBA) sudah tidak dibutuhkan lagi — dilepas sedini
+                 // mungkin karena inilah buffer TERBESAR (16 byte/piksel) di seluruh proses.
+
+    const blurredLuma = boxBlur1Channel(luma, w, h, 2);
+
+    const out = new Uint8ClampedArray(n*4);
+    // Halo clamp: batasi hasil tajam supaya tidak overshoot jauh dari nilai piksel
+    // tetangga asli — inilah yang mencegah tekstur "pecah"/ringing saat di-zoom besar.
+    const haloLimit = 40;
+    for(let p=0; p<n; p++){
+      const l0 = luma[p], lb = blurredLuma[p];
+      let boosted = l0 + amount*(l0 - lb);
+      boosted = Math.max(l0-haloLimit, Math.min(l0+haloLimit, boosted));
+      const newLuma = Math.max(0, Math.min(255, boosted));
+
+      const Cb = cb[p], Cr = cr[p];
+      const r = newLuma + 1.402*(Cr-128);
+      const g = newLuma - 0.344136*(Cb-128) - 0.714136*(Cr-128);
+      const b = newLuma + 1.772*(Cb-128);
+
+      const i = p*4;
+      out[i]=r; out[i+1]=g; out[i+2]=b; out[i+3]=alpha[p];
+    }
+    return out;
+  }
+
+  // ---- Bantuan: konversi kanvas <-> <img>, dan ambil piksel mentah dari kanvas ----
+  function canvasToImage(canvas){
+    return new Promise((resolve, reject)=>{
+      const img = new Image();
+      img.onload = ()=> resolve(img);
+      img.onerror = reject;
+      img.src = canvas.toDataURL('image/png');
     });
   }
+  function canvasToPixels(canvas){
+    const ctx = canvas.getContext('2d');
+    const id = ctx.getImageData(0, 0, canvas.width, canvas.height);
+    return { data: id.data, w: canvas.width, h: canvas.height };
+  }
+
+  // Hitung batas ukuran input AI berdasarkan resolusi target: model AI ini fixed 4x,
+  // jadi input diusahakan sekitar target/4 (+margin kualitas) — supaya tidak membuang
+  // waktu/memori menghasilkan kanvas raksasa yang ujung-ujungnya diperkecil lagi ke target.
+  function aiInputCapFor(targetW, targetH, hardCap){
+    const idealInput = Math.ceil(Math.max(targetW, targetH) / 4 * 1.15);
+    return Math.max(256, Math.min(hardCap, idealInput));
+  }
+
+  // ---- Coba mesin AI (server GPU dulu, lalu AI browser) — gagal diam-diam & fallback ----
+  async function tryAiEngines(denoisedPixels, srcW, srcH, targetW, targetH, onProgress){
+    const workCanvas = document.createElement('canvas');
+    workCanvas.width = srcW; workCanvas.height = srcH;
+    workCanvas.getContext('2d').putImageData(new ImageData(denoisedPixels, srcW, srcH), 0, 0);
+    const workImg = await canvasToImage(workCanvas);
+
+    if (window.BHYON_SERVER) {
+      try {
+        onProgress(0, 'Mencoba server GPU (Real-ESRGAN)...');
+        const canvas = await window.BHYON_SERVER.upscale(workImg, {
+          scale: 4, faceEnhance: false, maxSide: aiInputCapFor(targetW, targetH, 1440),
+          onProgress: (r)=> onProgress(r, 'Memproses di server GPU (Real-ESRGAN)...'),
+        });
+        return { engine: 'server', pixels: canvasToPixels(canvas) };
+      } catch (err) {
+        console.warn('Server AI tidak tersedia, lanjut ke AI browser:', err);
+      }
+    }
+
+    if (window.BHYON_AI) {
+      try {
+        onProgress(0, 'Menyiapkan model AI di browser...');
+        const canvas = await window.BHYON_AI.upscaleTiled(workImg, {
+          maxSide: aiInputCapFor(targetW, targetH, 2200), patchSize: 64, padding: 6,
+          onProgress: (r)=> onProgress(r, 'AI menambah detail (browser, 4x satu-pass)...'),
+        });
+        return { engine: 'browser-ai', pixels: canvasToPixels(canvas) };
+      } catch (err) {
+        console.warn('AI browser gagal, memakai mode klasik sebagai cadangan:', err);
+      }
+    }
+
+    return { engine: 'classic', pixels: null };
+  }
+
+  async function runEnhancement(){
+    try {
+      const img = currentImage;
+      const srcW0 = img.naturalWidth, srcH0 = img.naturalHeight;
+
+      // cap working source size for a bounded, responsive processing time
+      const WORK_MAX = 2400;
+      const longestSrc = Math.max(srcW0, srcH0);
+      const workScale = longestSrc > WORK_MAX ? WORK_MAX/longestSrc : 1;
+      const srcW = Math.round(srcW0*workScale), srcH = Math.round(srcH0*workScale);
+
+      const srcCanvas = document.createElement('canvas');
+      srcCanvas.width = srcW; srcCanvas.height = srcH;
+      const srcCtx = srcCanvas.getContext('2d');
+      srcCtx.imageSmoothingEnabled = true;
+      srcCtx.imageSmoothingQuality = 'high';
+      srcCtx.drawImage(img, 0, 0, srcW, srcH);
+      let srcImageData = srcCtx.getImageData(0, 0, srcW, srcH);
+
+      updateProgress(4, 'Membaca piksel gambar...');
+      await yieldNow();
+
+      let denoised = await bilateralDenoise(srcImageData.data, srcW, srcH, p=> updateProgress(4 + p*28, 'Mengurangi noise (bilateral filter)...'));
+      srcImageData = null; // sudah tidak dipakai lagi — bebaskan memori sebelum tahap berikutnya
+
+      let targetW = srcW0 * (selectedTarget/Math.max(srcW0,srcH0));
+      let targetH = srcH0 * (selectedTarget/Math.max(srcW0,srcH0));
+      targetW = Math.round(targetW); targetH = Math.round(targetH);
+
+      // ---- Mesin AI super-resolution: menambah detail asli, bukan sekadar resize ----
+      updateProgress(32, 'Menjalankan mesin AI upscaling...');
+      await yieldNow();
+      const aiResult = await tryAiEngines(denoised, srcW, srcH, targetW, targetH, (r, label)=> updateProgress(32 + r*32, label));
+      const engineUsed = aiResult.engine;
+      let basePixels, baseW, baseH;
+      if (aiResult.pixels) {
+        basePixels = aiResult.pixels.data; baseW = aiResult.pixels.w; baseH = aiResult.pixels.h;
+        denoised = null; // sudah dipakai sebagai input AI, sudah tidak perlu lagi
+      } else {
+        // Fallback: tidak ada mesin AI yang berhasil — pakai hasil denoise apa adanya,
+        // resolusi dinaikkan lewat Lanczos di tahap berikutnya seperti sebelumnya.
+        basePixels = denoised; baseW = srcW; baseH = srcH;
+      }
+
+      // ---- Pengaman memori: batasi total piksel keluaran sesuai kira-kira kapasitas perangkat ----
+      // Ini bagian yang tadinya bikin resolusi 6K sering error di HP. Masalahnya rumus lama cuma
+      // mengandalkan navigator.deviceMemory (RAM fisik device) — padahal itu TIDAK PERNAH tersedia
+      // di Safari iOS (selalu jatuh ke asumsi 4GB) dan bahkan di Android, RAM fisik tidak
+      // mencerminkan seberapa ketat browser membatasi memori SATU TAB sebelum mematikannya paksa.
+      // Sekarang pakai estimasi byte-per-piksel yang riil dari pipeline (resize Lanczos +
+      // sharpening) dan anggaran yang jauh lebih konservatif khusus untuk HP.
+      const isMobile = /Android|iPhone|iPad|iPod|Mobi/i.test(navigator.userAgent) ||
+                        (navigator.maxTouchPoints > 1 && /Mac/i.test(navigator.platform)); // iPad kadang menyamar jadi "Mac"
+      const reportedGB = navigator.deviceMemory || (isMobile ? 3 : 8);
+      // Byte per piksel keluaran di titik puncak (buffer Float32 sementara saat resize+sharpen).
+      const BYTES_PER_OUTPUT_PIXEL = 34;
+      const usableMB = isMobile
+        ? Math.min(460, reportedGB * 150) // HP: dikunci keras — tab browser mobile sangat gampang di-OOM-kill
+        : reportedGB * 250;               // Desktop: jauh lebih longgar, RAM & browser lebih toleran
+      const safeMaxMP = (usableMB * 1024 * 1024) / (BYTES_PER_OUTPUT_PIXEL * 1e6);
+      const requestedMP = (targetW*targetH)/1e6;
+      let autoDowngraded = false;
+      if(requestedMP > safeMaxMP){
+        const shrink = Math.sqrt(safeMaxMP/requestedMP);
+        targetW = Math.round(targetW*shrink);
+        targetH = Math.round(targetH*shrink);
+        autoDowngraded = true;
+      }
+
+      let resized = await lanczosResize(basePixels, baseW, baseH, targetW, targetH, p=> updateProgress(66 + p*22, 'Menyesuaikan ke resolusi target...'));
+      basePixels = null; // bebaskan buffer sebelum tahap sharpening yang butuh memori besar
+      await yieldNow();
+
+      updateProgress(90, 'Menajamkan & menyempurnakan detail...');
+      await yieldNow();
+
+      // Upscale besar butuh sharpening lebih lembut, supaya tidak muncul tekstur "pecah"/ringing saat di-zoom.
+      // Kalau AI sudah menambah detail duluan, sharpening akhir dibuat lebih ringan lagi supaya tidak
+      // memperkuat artefak halusinasi model — cukup sebagai polish, bukan sumber ketajaman utama.
+      const upscaleRatio = targetW / baseW;
+      const sharpenCap = engineUsed === 'classic' ? 0.45 : 0.30;
+      const sharpenMin = engineUsed === 'classic' ? 0.22 : 0.12;
+      const sharpenAmount = Math.min(sharpenCap, Math.max(sharpenMin, 1/upscaleRatio));
+
+      const finalPixels = finalizeDetail(resized, targetW, targetH, sharpenAmount);
+      resized = null; // sudah tidak dipakai lagi
+      updateProgress(95, 'Menyusun gambar akhir...');
+      await yieldNow();
+
+      outputCanvas.width = targetW;
+      outputCanvas.height = targetH;
+      const outCtx = outputCanvas.getContext('2d');
+      outCtx.putImageData(new ImageData(finalPixels, targetW, targetH), 0, 0);
+
+      // build a naive (unprocessed) upscale at the same target size, purely for side-by-side comparison
+      const naiveCanvas = document.createElement('canvas');
+      naiveCanvas.width = targetW; naiveCanvas.height = targetH;
+      const naiveCtx = naiveCanvas.getContext('2d');
+      naiveCtx.imageSmoothingEnabled = true;
+      naiveCtx.imageSmoothingQuality = 'high';
+      naiveCtx.drawImage(img, 0, 0, targetW, targetH);
+
+      beforeImg.src = naiveCanvas.toDataURL('image/png');
+      afterImg.src = outputCanvas.toDataURL('image/png');
+      setSliderPercent(50);
+
+      updateProgress(100, 'Selesai!');
+      outputEmpty.style.display = 'none';
+      outputFrame.style.display = 'block';
+      outputTag.style.display = 'flex';
+      const engineLabel = engineUsed === 'server'
+        ? 'AI Real-ESRGAN (server GPU, setara Upscayl)'
+        : engineUsed === 'browser-ai'
+          ? 'AI ESRGAN 4x (diproses di browser Anda)'
+          : 'mode klasik (noise + Lanczos + sharpen, tanpa AI — mesin AI tidak tersedia)';
+      document.getElementById('outputTagText').textContent =
+        targetW + '×' + targetH + ' px · ' + engineLabel + ' · wajah & rasio tidak diubah' +
+        (autoDowngraded ? ' · resolusi disesuaikan otomatis agar aman di perangkat ini' : '');
+    } catch(err){
+      console.error(err);
+      progressWrap.classList.remove('active');
+      alert('Gagal memproses pada resolusi ini (kemungkinan memori perangkat tidak cukup untuk resolusi sebesar itu). Coba pilih resolusi yang lebih rendah (2K atau 4K), atau gunakan foto dengan ukuran file lebih kecil.');
+    }
+  }
+
+  // ---------- Before/after compare slider ----------
+  const compareWrap = document.getElementById('compareWrap');
+  const compareBeforeWrap = document.getElementById('compareBeforeWrap');
+  const compareHandle = document.getElementById('compareHandle');
+  const beforeImg = document.getElementById('beforeImg');
+  const afterImg = document.getElementById('afterImg');
+  let sliderDragging = false;
+  function setSliderPercent(pct){
+    pct = Math.min(100, Math.max(0, pct));
+    compareBeforeWrap.style.width = pct + '%';
+    compareHandle.style.left = pct + '%';
+  }
+  function pointerXPercent(e){
+    const rect = compareWrap.getBoundingClientRect();
+    const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+    return ((clientX - rect.left) / rect.width) * 100;
+  }
+  compareWrap.addEventListener('pointerdown', (e)=>{ sliderDragging = true; setSliderPercent(pointerXPercent(e)); });
+  window.addEventListener('pointermove', (e)=>{ if(sliderDragging) setSliderPercent(pointerXPercent(e)); });
+  window.addEventListener('pointerup', ()=> sliderDragging = false);
+
+  processBtn.addEventListener('click', async ()=>{
+    if(!currentImage){ showToast('Unggah gambar terlebih dahulu.', true); return; }
+    processBtn.disabled = true;
+    progressWrap.classList.add('active');
+    updateProgress(0, 'Memulai...');
+    try{
+      await runEnhancement();
+    }catch(err){
+      showToast('Pemrosesan gagal, coba gambar lain.', true);
+      console.error(err);
+    }finally{
+      processBtn.disabled = false;
+    }
+  });
+
+  // ---------- Preview modal ----------
+  const modalOverlay = document.getElementById('modalOverlay');
+  const modalImg = document.getElementById('modalImg');
+  const modalClose = document.getElementById('modalClose');
+
+  document.getElementById('previewBtn').addEventListener('click', ()=>{
+    modalImg.src = outputCanvas.toDataURL('image/png');
+    modalOverlay.classList.add('active');
+  });
+  function closeModal(){ modalOverlay.classList.remove('active'); }
+  modalClose.addEventListener('click', closeModal);
+  modalOverlay.addEventListener('click', (e)=>{ if(e.target === modalOverlay) closeModal(); });
+  document.addEventListener('keydown', (e)=>{ if(e.key === 'Escape') closeModal(); });
+
+  // ---------- Download ----------
+  document.getElementById('downloadBtn').addEventListener('click', ()=>{
+    outputCanvas.toBlob((blob)=>{
+      if(!blob){ showToast('Gagal membuat file unduhan.', true); return; }
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'bhyon-hd-' + currentFileName + '.png';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      showToast('Gambar HD berhasil diunduh.');
+    }, 'image/png');
+  });
 })();
+</script>
+<script src="ai-mode.js"></script>
+<script src="ai-server-mode.js"></script>
+</body>
+</html>
