@@ -1,9 +1,19 @@
 // api/upscale.js
-// Vercel Serverless Function — proxy aman ke Replicate API (model Real-ESRGAN,
+// Vercel Serverless Function — proxy aman ke Replicate API (model Real-ESRGAN resmi,
 // mesin AI yang sama persis dengan yang dipakai Upscayl).
 // Kenapa perlu proxy? Karena REPLICATE_API_TOKEN tidak boleh ditaruh di kode
 // frontend (index.html) — kalau ditaruh di sana, siapapun yang buka "View Source"
 // bisa mencuri dan memakai kuota/biaya API milikmu.
+//
+// PERBAIKAN PENTING: versi sebelumnya memanggil POST /v1/predictions dengan sebuah
+// "version" hash yang di-pin manual (350d3204...). Replicate sudah menjadikan
+// nightmareai/real-esrgan sebagai "official model", dan versi lama yang di-pin itu
+// SUDAH DIALIHKAN OTOMATIS ("automatically upgraded") ke versi terbaru oleh Replicate
+// sendiri — artinya hash yang di-pin bisa basi kapan saja tanpa pemberitahuan dan
+// berisiko bikin request gagal diam-diam. Sekarang kita panggil endpoint resmi model
+// TANPA hash sama sekali, sehingga otomatis selalu memakai versi terbaru & tervalidasi:
+//   POST https://api.replicate.com/v1/models/nightmareai/real-esrgan/predictions
+// Ini format resmi Replicate untuk "official models" dan tidak akan basi lagi.
 
 export default async function handler(req, res) {
   res.setHeader('Access-Control-Allow-Origin', '*');
@@ -26,7 +36,7 @@ export default async function handler(req, res) {
   }
 
   try {
-    const createResp = await fetch('https://api.replicate.com/v1/predictions', {
+    const createResp = await fetch('https://api.replicate.com/v1/models/nightmareai/real-esrgan/predictions', {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${token}`,
@@ -34,16 +44,11 @@ export default async function handler(req, res) {
         'Prefer': 'wait',
       },
       body: JSON.stringify({
-        // PENTING: version hash di bawah ini sebelumnya rusak (kurang 1 karakter di bagian akhir),
-        // sehingga Replicate selalu menolak request ini dengan error "version not found" dan
-        // tombol "HD Server Asli" (mesin Real-ESRGAN — persis yang dipakai Upscayl) tidak pernah
-        // benar-benar jalan. Hash di bawah ini sudah diverifikasi 64 karakter & valid.
-        version: '350d32041630ffbe63c8352783a26d94126809164e54085352f8326e53999085', // nightmareai/real-esrgan
         input: {
           image,
           // Model ini paling stabil di scale 2–4 dan disarankan untuk gambar input hingga ~1440p.
           // Kita clamp di sini supaya request aneh dari client tidak bikin job gagal/timeout.
-          scale: Math.min(4, Math.max(1, Number(scale) || 4)),
+          scale: Math.min(10, Math.max(1, Number(scale) || 4)),
           face_enhance: Boolean(face_enhance),
         },
       }),
